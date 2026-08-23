@@ -630,11 +630,14 @@ pub(crate) fn parse_html_element(
             p.re_lex(HtmlReLexContext::SingleCurly);
             parse_single_text_expression(p, regular_context(p))
         }
-        T!["{{"] => HtmlSyntaxFeatures::DoubleTextExpressions.parse_exclusive_syntax(
-            p,
-            |p| parse_double_text_expression(p, regular_context(p)),
-            |p, m| disabled_interpolation(p, m.range(p)),
-        ),
+        T!["{{"] if DoubleTextExpressions.is_supported(p) => {
+            parse_double_text_expression(p, regular_context(p))
+        }
+        T!["{{"] => {
+            let m = p.start();
+            p.bump_remap_with_context(HTML_LITERAL, regular_context(p));
+            Present(m.complete(p, HTML_CONTENT))
+        }
         T!["{@"] => parse_svelte_at_block(p),
         T!["{#"] => parse_svelte_hash_block(p),
         T!['{'] => parse_svelte_declaration_or_expression(p).or_else(|| {

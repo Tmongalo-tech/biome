@@ -534,12 +534,19 @@ impl FormatHtmlElementList {
                         }
 
                         // Hold back one word so the final fill entry can include a closing tag.
+                        let no_separator = format_with(|_| Ok(()));
                         let mut fill = f.fill();
                         let mut last_word = word;
+                        let mut last_word_has_separator = false;
                         loop {
                             match children_iter.peek() {
                                 Some(HtmlChild::Word(next_word)) => {
-                                    fill.entry(&soft_line_break_or_space(), last_word);
+                                    if last_word_has_separator {
+                                        fill.entry(&soft_line_break_or_space(), last_word);
+                                    } else {
+                                        fill.entry(&no_separator, last_word);
+                                    }
+                                    last_word_has_separator = !last_word.is_adjacent_to(next_word);
                                     last_word = next_word;
                                     children_iter.next();
                                 }
@@ -580,15 +587,19 @@ impl FormatHtmlElementList {
                         };
 
                         if let Some(closing_tag) = hugged_closing_tag {
-                            fill.entry(
-                                &soft_line_break_or_space(),
-                                &format_with(|f| {
-                                    write!(f, [last_word])?;
-                                    format_partial_closing_tag(f, closing_tag)
-                                }),
-                            );
-                        } else {
+                            let last_word = format_with(|f| {
+                                write!(f, [last_word])?;
+                                format_partial_closing_tag(f, closing_tag)
+                            });
+                            if last_word_has_separator {
+                                fill.entry(&soft_line_break_or_space(), &last_word);
+                            } else {
+                                fill.entry(&no_separator, &last_word);
+                            }
+                        } else if last_word_has_separator {
                             fill.entry(&soft_line_break_or_space(), last_word);
+                        } else {
+                            fill.entry(&no_separator, last_word);
                         }
                         fill.finish()?;
 

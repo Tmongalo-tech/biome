@@ -71,6 +71,10 @@ impl HtmlWord {
         self.text.chars().count() == 1
     }
 
+    pub(crate) fn is_adjacent_to(&self, next: &Self) -> bool {
+        self.source_position + self.text.text_len() == next.source_position
+    }
+
     #[cfg(debug_assertions)]
     fn text(&self) -> &str {
         &self.text
