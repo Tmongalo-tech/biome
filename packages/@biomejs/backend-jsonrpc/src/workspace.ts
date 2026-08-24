@@ -2439,7 +2439,7 @@ See https://biomejs.dev/linter/rules/no-inline-styles
 	noInlineStyles?: NoInlineStylesConfiguration;
 	/**
 	* Disallow invalid accept values on file inputs.
-See https://biomejs.dev/linter/rules/no-invalid-file-input-accept
+See https://biomejs.dev/linter/rules/no-invalid-file-input-accept 
 	 */
 	noInvalidFileInputAccept?: NoInvalidFileInputAcceptConfiguration;
 	/**
