@@ -127,6 +127,7 @@ dependencies = [
  "biome_string_case",
  "biome_suppression",
  "biome_text_edit",
+ "biome_unicode_table",
  "camino",
  "either",
  "enumflags2",
