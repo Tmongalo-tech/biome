@@ -1,11 +1,5 @@
-use super::{
-    ImportResolution, imports::MAX_NAMESPACE_IMPORT_MEMBER_STEPS, resolver::ResolutionCtx,
-};
-use crate::db::queries::inference_module_sccs;
-use crate::{
-    ModuleGraphGeneration, js_module_info::TsBindingReferenceExt, module_for_key,
-    module_graph::ModuleInfoKind,
-};
+use super::{imports::MAX_NAMESPACE_IMPORT_MEMBER_STEPS, resolver::ResolutionCtx};
+use crate::{js_module_info::TsBindingReferenceExt, module_for_key, module_graph::ModuleInfoKind};
 use biome_js_type_info::{
     Path, TypeImportQualifier, TypeReference, TypeReferenceQualifier, TypeResolverLevel,
     global_type_id_for_qualifier,
@@ -51,10 +45,8 @@ impl<'db> ResolutionCtx<'db, '_> {
                 .and_then(|reference| reference.get_binding_id_for_qualifier(qualifier))
                 .and_then(|id| self.js_info.semantic_model.binding_by_id(id));
             if let Some(binding) = binding {
-                let TypeReference::Resolved(resolved_id) = self
-                    .js_info
-                    .raw_binding_types
-                    .get(&binding.syntax().text_trimmed_range())?
+                let TypeReference::Resolved(resolved_id) =
+                    self.js_info.raw_binding_types.get(&binding.range())?
                 else {
                     return None;
                 };
@@ -133,17 +125,26 @@ impl<'db> ResolutionCtx<'db, '_> {
                 } else if binding_is_imported
                     && let Some(import) = self.js_info.static_imports.get(identifier.text())
                 {
-                    self.resolve_import(&TypeImportQualifier {
+                    let imported = self.resolve_import(&TypeImportQualifier {
                         symbol: import.symbol.clone(),
                         specifier: Arc::new(import.specifier.clone()),
                         type_only: qualifier.type_only,
-                    })
+                    });
+                    if qualifier.type_only
+                        && members.is_empty()
+                        && let InferredTypeData::MergedReference(reference) = imported
+                        && let Some(ty) = reference.ty(self.db)
+                    {
+                        ty
+                    } else {
+                        imported
+                    }
                 } else if resolves_declarations_directly {
-                    self.resolve_local_binding(binding.syntax().text_trimmed_range())
+                    self.resolve_local_binding(binding.range())
                 } else {
                     self.js_info
                         .raw_binding_types
-                        .get(&binding.syntax().text_trimmed_range())
+                        .get(&binding.range())
                         .cloned()
                         .map_or(InferredTypeData::Unknown, |reference| {
                             self.resolve(&reference)
@@ -370,7 +371,7 @@ impl<'db> ResolutionCtx<'db, '_> {
                     next = self
                         .js_info
                         .raw_binding_types
-                        .get(&binding.syntax().text_trimmed_range())
+                        .get(&binding.range())
                         .cloned();
                     break;
                 }
@@ -498,34 +499,27 @@ impl<'db> ResolutionCtx<'db, '_> {
                     .raw_types
                     .get(type_id.index())
                     .and_then(|raw| raw.type_parameters())
-                    .map(<[_]>::to_vec)
+                    .and_then(|parameters| {
+                        parameters
+                            .iter()
+                            .map(|parameter| match parameter {
+                                TypeReference::Resolved(resolved_id) => Some(*resolved_id),
+                                TypeReference::Qualifier(_) | TypeReference::Import(_) => None,
+                            })
+                            .collect::<Option<Vec<_>>>()
+                    })
             {
-                let mut ctx = match self.import_resolution {
-                    ImportResolution::OnDemand { remaining } => {
-                        let resolve_declarations_directly = if self.resolves_declarations_directly()
-                        {
-                            let sccs =
-                                inference_module_sccs(self.db, ModuleGraphGeneration::get(self.db));
-                            sccs.contains_cycle_between(self.module, module)
-                        } else {
-                            false
-                        };
-                        self.for_on_demand_import(
-                            module,
-                            js_info,
-                            remaining,
-                            resolve_declarations_directly,
-                        )
-                    }
-                    import_resolution @ (ImportResolution::FromTables { .. }
-                    | ImportResolution::CycleFallback(_)) => {
-                        ResolutionCtx::new(self.db, module, js_info, import_resolution)
-                    }
-                };
+                // A foreign parameter must not be resolved in a fresh context.
+                // Its cycle and depth guards would start empty, and generic
+                // declarations in an import cycle whose parameters name each
+                // other, such as `A<T extends B<any>>` and `B<U extends A<any>>`,
+                // would recurse until the stack overflows.
                 return Some(
                     parameters
-                        .iter()
-                        .map(|parameter| ctx.resolve(parameter))
+                        .into_iter()
+                        .map(|resolved_id| {
+                            self.resolve_foreign_type_id(module, js_info, resolved_id)
+                        })
                         .collect(),
                 );
             }
@@ -545,6 +539,7 @@ impl<'db> ResolutionCtx<'db, '_> {
             InferredTypeData::Unknown
             | InferredTypeData::Global
             | InferredTypeData::GlobalType(_)
+            | InferredTypeData::GlobalLocal(_)
             | InferredTypeData::BigInt
             | InferredTypeData::Boolean
             | InferredTypeData::Null
@@ -564,6 +559,7 @@ impl<'db> ResolutionCtx<'db, '_> {
             | InferredTypeData::Union(_)
             | InferredTypeData::TypeOperator(_)
             | InferredTypeData::IndexedAccess(_)
+            | InferredTypeData::MappedType(_)
             | InferredTypeData::Literal(_)
             | InferredTypeData::MergedReference(_)
             | InferredTypeData::TypeofExpression(_)
@@ -711,6 +707,7 @@ impl<'db> ResolutionCtx<'db, '_> {
                 InferredTypeData::Unknown
                 | InferredTypeData::Global
                 | InferredTypeData::GlobalType(_)
+                | InferredTypeData::GlobalLocal(_)
                 | InferredTypeData::BigInt
                 | InferredTypeData::Boolean
                 | InferredTypeData::Null
@@ -728,6 +725,7 @@ impl<'db> ResolutionCtx<'db, '_> {
                 | InferredTypeData::Union(_)
                 | InferredTypeData::TypeOperator(_)
                 | InferredTypeData::IndexedAccess(_)
+                | InferredTypeData::MappedType(_)
                 | InferredTypeData::MergedReference(_)
                 | InferredTypeData::TypeofExpression(_)
                 | InferredTypeData::AnyKeyword
@@ -762,6 +760,7 @@ impl<'db> ResolutionCtx<'db, '_> {
             InferredTypeData::Unknown
             | InferredTypeData::Global
             | InferredTypeData::GlobalType(_)
+            | InferredTypeData::GlobalLocal(_)
             | InferredTypeData::BigInt
             | InferredTypeData::Boolean
             | InferredTypeData::Null
@@ -783,6 +782,7 @@ impl<'db> ResolutionCtx<'db, '_> {
             | InferredTypeData::Intersection(_)
             | InferredTypeData::TypeOperator(_)
             | InferredTypeData::IndexedAccess(_)
+            | InferredTypeData::MappedType(_)
             | InferredTypeData::InstanceOf(_)
             | InferredTypeData::MergedReference(_)
             | InferredTypeData::TypeofExpression(_)
@@ -811,6 +811,7 @@ impl<'db> ResolutionCtx<'db, '_> {
             InferredTypeData::Unknown
             | InferredTypeData::Global
             | InferredTypeData::GlobalType(_)
+            | InferredTypeData::GlobalLocal(_)
             | InferredTypeData::BigInt
             | InferredTypeData::Boolean
             | InferredTypeData::Null
@@ -833,6 +834,7 @@ impl<'db> ResolutionCtx<'db, '_> {
             | InferredTypeData::Union(_)
             | InferredTypeData::TypeOperator(_)
             | InferredTypeData::IndexedAccess(_)
+            | InferredTypeData::MappedType(_)
             | InferredTypeData::InstanceOf(_)
             | InferredTypeData::MergedReference(_)
             | InferredTypeData::TypeofExpression(_)

@@ -199,18 +199,19 @@ fn maximum_diagnostics() {
             .iter()
             .filter(|m| m.level == LogLevel::Error)
             .count(),
-        20_usize
+        // 20 diagnostics, the max-diagnostics warning, and the summary
+        22_usize
     );
 
     assert!(
         messages
             .iter()
-            .filter(|m| m.level == LogLevel::Log)
+            .filter(|m| m.level == LogLevel::Error)
             .any(|m| {
                 let content = format!("{:?}", m.content);
                 content.contains("The number of diagnostics exceeds the limit allowed")
                     && content.contains("Diagnostics not shown")
-                    && content.contains("29")
+                    && content.contains("30")
             })
     );
 
@@ -221,6 +222,46 @@ fn maximum_diagnostics() {
         console,
         result,
     ));
+}
+
+#[test]
+fn summary_is_printed_to_stderr() {
+    let fs = MemoryFileSystem::default();
+    let mut console = BufferConsole::default();
+    let file_path = Utf8Path::new("check.js");
+    fs.insert(file_path.into(), NO_DEBUGGER.as_bytes());
+
+    let (_, result) = run_cli(
+        fs,
+        &mut console,
+        Args::from(["check", "--write", file_path.as_str()].as_slice()),
+    );
+
+    assert!(result.is_err(), "run_cli returned {result:?}");
+
+    let messages = &console.out_buffer;
+
+    assert!(
+        messages.iter().all(|m| m.level == LogLevel::Error),
+        "expected every message to be printed to stderr: {messages:?}"
+    );
+
+    let error_contents: Vec<_> = messages
+        .iter()
+        .map(|m| markup_to_string(markup! {{m.content}}))
+        .collect();
+
+    assert!(
+        error_contents
+            .iter()
+            .any(|content| content.contains("Skipped") && content.contains("suggested fixes")),
+        "{error_contents:#?}"
+    );
+    assert!(
+        error_contents
+            .iter()
+            .any(|content| content.contains("Checked"))
+    );
 }
 
 #[test]
@@ -1782,7 +1823,7 @@ fn applies_organize_imports_bug_4552() {
         "linter": {
             "enabled": true,
             "rules": {
-                "recommended": true,
+                "preset": "recommended",
                 "correctness": { "noUnusedImports": "off" }
             }
         }
@@ -2046,7 +2087,7 @@ fn check_stdin_applies_the_config_based_on_path() {
   "linter": {
     "enabled": true,
     "rules": {
-      "recommended": true
+      "preset": "recommended"
     }
   },
   "formatter": {
@@ -2368,7 +2409,7 @@ fn should_apply_correct_file_source() {
         r#"{
     	"linter": {
     		"rules": {
-    			"recommended": true,
+    			"preset": "recommended",
     			"correctness": {
     				"noUndeclaredVariables": "error"
     			}
@@ -2470,7 +2511,7 @@ fn should_not_disable_recommended_rules_for_a_group() {
   "linter": {
     "enabled": true,
     "rules": {
-      "recommended": true,
+      "preset": "recommended",
       "complexity": {
         "noUselessSwitchCase": "off"
       }
@@ -2646,7 +2687,7 @@ fn should_pass_if_there_are_only_warnings() {
 {
   "linter": {
     "rules": {
-        "recommended": true,
+        "preset": "recommended",
         "suspicious": {
             "noClassAssign": "warn"
         }
@@ -2695,7 +2736,7 @@ fn does_error_with_only_warnings() {
 {
   "linter": {
     "rules": {
-        "recommended": true,
+        "preset": "recommended",
         "suspicious": {
             "noClassAssign": "warn"
         }
@@ -2796,7 +2837,7 @@ fn should_show_formatter_diagnostics_for_files_ignored_by_linter() {
                 "enabled": true,
                 "includes": ["**", "!build/**"],
                 "rules": {
-                    "recommended": true
+                    "preset": "recommended"
                 }
             }
         }"#,
@@ -3427,6 +3468,62 @@ fn check_json_plugin() {
     assert_cli_snapshot(SnapshotPayload::new(
         module_path!(),
         "check_json_plugin",
+        fs,
+        console,
+        result,
+    ));
+}
+
+#[test]
+fn check_plugin_from_package_manifest() {
+    let fs = MemoryFileSystem::default();
+    let mut console = BufferConsole::default();
+
+    fs.insert(
+        Utf8PathBuf::from("biome.json"),
+        br#"{
+    "plugins": ["@scope/biome-plugin/noAssign"],
+    "formatter": { "enabled": false }
+}"#,
+    );
+    fs.insert(
+        Utf8PathBuf::from("node_modules/@scope/biome-plugin/package.json"),
+        br#"{
+    "name": "@scope/biome-plugin",
+    "exports": "./index.js"
+}"#,
+    );
+    fs.insert(
+        Utf8PathBuf::from("node_modules/@scope/biome-plugin/biome-manifest.json"),
+        br#"{
+    "version": 1,
+    "plugins": {
+        "rules": [{ "noAssign": "rules/noAssign.grit" }],
+        "presets": { "recommended": ["noAssign"] }
+    }
+}"#,
+    );
+    fs.insert(
+        Utf8PathBuf::from("node_modules/@scope/biome-plugin/rules/noAssign.grit"),
+        br#"`Object.assign($args)` where {
+    register_diagnostic(
+        span = $args,
+        message = "Prefer object spread instead of `Object.assign()`"
+    )
+}"#,
+    );
+    let file_path = "file.js";
+    fs.insert(file_path.into(), b"Object.assign({});");
+
+    let (fs, result) = run_cli_with_server_workspace(
+        fs,
+        &mut console,
+        Args::from(["check", file_path].as_slice()),
+    );
+
+    assert_cli_snapshot(SnapshotPayload::new(
+        module_path!(),
+        "check_plugin_from_package_manifest",
         fs,
         console,
         result,

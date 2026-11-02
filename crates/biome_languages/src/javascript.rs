@@ -148,6 +148,14 @@ pub enum SvelteEmbeddingKind {
     Source,
     /// A template interpolation or directive payload parsed as a single expression.
     Expression,
+    /// A template interpolation whose value Svelte converts to a string, parsed as a
+    /// single expression.
+    ///
+    /// This covers mustaches in element content, such as `<p>{value}</p>`, and
+    /// mustaches inside quoted attribute values that contain other text, such as
+    /// `class="item {value}"`. A mustache that forms an entire attribute value, such
+    /// as `prop={value}`, passes the value through unchanged and uses [Self::Expression].
+    TextInterpolation,
     /// The name and parameters from a `{#snippet ...}` block parsed as a Svelte snippet root.
     SnippetSignature,
     /// The payload of a `{@const ...}` block parsed as an assignment expression.
@@ -186,6 +194,12 @@ pub enum JsEmbeddingKind {
         /// When `false`, the content is parsed as an expression via `parse_template_expression`.
         /// Source-level embeds (`<script>`) use `true`; directives and text expressions use `false`.
         allow_statements: bool,
+        /// Whether this is the value of a slot directive (e.g. `v-slot="{ item }: Props"`),
+        /// which is parsed as the parameters of an arrow function.
+        slot_props: bool,
+        /// Whether this is the value of the `generic` attribute of `<script setup>`
+        /// (e.g. `generic="T extends Item"`), which is parsed as a list of type parameters.
+        generics_list: bool,
         /// Whether this snippet is from a class-related attribute
         /// (e.g. :class="...")
         is_class_attribute: bool,
@@ -248,6 +262,25 @@ impl JsEmbeddingKind {
             }
         )
     }
+    pub const fn is_vue_slot_props(&self) -> bool {
+        matches!(
+            self,
+            Self::Vue {
+                slot_props: true,
+                generics_list: false,
+                ..
+            }
+        )
+    }
+    pub const fn is_vue_generics_list(&self) -> bool {
+        matches!(
+            self,
+            Self::Vue {
+                generics_list: true,
+                ..
+            }
+        )
+    }
     pub const fn is_svelte(&self) -> bool {
         matches!(self, Self::Svelte { .. })
     }
@@ -306,6 +339,17 @@ impl JsEmbeddingKind {
             }
         )
     }
+    /// Returns `true` if the code is a Svelte template interpolation whose value is
+    /// rendered as text. See [SvelteEmbeddingKind::TextInterpolation].
+    pub const fn is_svelte_text_interpolation(&self) -> bool {
+        matches!(
+            self,
+            Self::Svelte {
+                embedding_kind: SvelteEmbeddingKind::TextInterpolation,
+                ..
+            }
+        )
+    }
     pub const fn is_svelte_const_block(&self) -> bool {
         matches!(
             self,
@@ -339,6 +383,10 @@ pub struct JsFileSource {
     /// Used to mark if the JavaScript is embedded inside some particular files. This affects the parsing.
     /// For example, if inside an Astro file, a top-level return statement is allowed.
     embedding_kind: JsEmbeddingKind,
+    /// Marks a Google Apps Script file (detected via the `.gs` extension).
+    /// Apps Script is plain JavaScript running in Google's runtime, so it
+    /// exposes extra service globals (e.g. `SpreadsheetApp`).
+    is_google_apps_script: bool,
 }
 
 impl JsFileSource {
@@ -403,6 +451,8 @@ impl JsFileSource {
             is_source: true,
             event_handler: false,
             allow_statements: true,
+            slot_props: false,
+            generics_list: false,
         })
     }
 
@@ -414,6 +464,8 @@ impl JsFileSource {
             is_source: true,
             event_handler: false,
             allow_statements: true,
+            slot_props: false,
+            generics_list: false,
         })
     }
 
@@ -455,6 +507,11 @@ impl JsFileSource {
         self
     }
 
+    pub const fn with_google_apps_script(mut self, is_google_apps_script: bool) -> Self {
+        self.is_google_apps_script = is_google_apps_script;
+        self
+    }
+
     pub const fn language(&self) -> Language {
         self.language
     }
@@ -481,6 +538,10 @@ impl JsFileSource {
 
     pub const fn is_typescript(&self) -> bool {
         self.language.is_typescript()
+    }
+
+    pub const fn is_google_apps_script(&self) -> bool {
+        self.is_google_apps_script
     }
 
     pub const fn is_jsx(&self) -> bool {
@@ -522,6 +583,7 @@ impl JsFileSource {
             self.embedding_kind,
             JsEmbeddingKind::Svelte {
                 embedding_kind: SvelteEmbeddingKind::Expression
+                    | SvelteEmbeddingKind::TextInterpolation
                     | SvelteEmbeddingKind::SnippetSignature
                     | SvelteEmbeddingKind::LegacyConst,
                 ..
@@ -538,6 +600,16 @@ impl JsFileSource {
     /// Returns true if this is a Vue event handler (v-on directive)
     pub const fn is_vue_event_handler(&self) -> bool {
         self.embedding_kind.is_vue_event_handler()
+    }
+
+    /// Returns true if this is the value of a Vue slot directive (`v-slot` or `#name`)
+    pub const fn is_vue_slot_props(&self) -> bool {
+        self.embedding_kind.is_vue_slot_props()
+    }
+
+    /// Returns true if this is the value of the `generic` attribute of a Vue `<script setup>`
+    pub const fn is_vue_generics_list(&self) -> bool {
+        self.embedding_kind.is_vue_generics_list()
     }
 
     /// Returns true if this is a Svelte `{@const}` block
@@ -660,6 +732,7 @@ impl JsFileSource {
             "js" | "mjs" => Ok(Self::js_module()),
             "jsx" => Ok(Self::jsx()),
             "cjs" => Ok(Self::js_script()),
+            "gs" => Ok(Self::js_script().with_google_apps_script(true)),
             "ts" => Ok(Self::ts()),
             "mts" | "cts" => Ok(Self::ts_restricted()),
             "tsx" => Ok(Self::tsx()),
@@ -776,6 +849,8 @@ mod tests {
                 is_source: false,
                 event_handler: false,
                 allow_statements: false,
+                slot_props: false,
+                generics_list: false,
                 is_class_attribute: true,
             },
             JsEmbeddingKind::Svelte {
@@ -801,6 +876,19 @@ mod tests {
     }
 
     #[test]
+    fn svelte_text_interpolation_is_template_expression() {
+        let source = JsFileSource::js_module().with_embedding_kind(JsEmbeddingKind::Svelte {
+            is_module_script: false,
+            is_class_attribute: false,
+            file_kind: SvelteFileKind::Component,
+            embedding_kind: SvelteEmbeddingKind::TextInterpolation,
+        });
+        assert!(source.is_template_expression());
+        assert!(source.as_embedding_kind().is_svelte_text_interpolation());
+        assert!(!source.is_embedded_source());
+    }
+
+    #[test]
     fn detects_svelte_typescript_source_modules_case_insensitively() {
         let source = JsFileSource::try_from(Utf8Path::new("component.SVELTE.TS")).unwrap();
 
@@ -814,5 +902,15 @@ mod tests {
 
         assert!(source.is_svelte_source_module());
         assert!(!source.is_typescript());
+    }
+
+    #[test]
+    fn detects_google_apps_script_by_extension() {
+        // `.gs` files are parsed as scripts so module syntax is rejected.
+        let source = JsFileSource::try_from(Utf8Path::new("Code.GS")).unwrap();
+
+        assert!(source.is_script());
+        assert!(!source.is_typescript());
+        assert!(source.is_google_apps_script());
     }
 }

@@ -57,6 +57,8 @@ AnyJsRoot =
 	| JsExpressionTemplateRoot
 	| JsSvelteSnippetRoot
 	| JsSvelteDeclarationRoot
+	| JsVueSlotPropsRoot
+	| JsVueGenericRoot
 
 JsScript =
 	bom: 'UNICODE_BOM'?
@@ -94,6 +96,22 @@ JsSvelteSnippetRoot =
 		name: AnyJsBinding
 		parameters: JsParameters
 		eof: 'EOF'
+
+// Special root created for the props of Vue slot directives: `v-slot="{ item }: Props"`
+// Vue compiles the value as the parameters of an arrow function, without parentheses.
+JsVueSlotPropsRoot =
+		parameters: JsParameterList
+		eof: 'EOF'
+
+// <script setup lang="ts" generic="T extends U">
+//                                  ^^^^^^^^^^^
+JsVueGenericRoot =
+		items: AnyJsVueGenericTypeParameters
+		eof: 'EOF'
+
+AnyJsVueGenericTypeParameters =
+	TsTypeParameterList
+	| JsBogus
 
 // Special root created for Svelte declaration tags
 JsSvelteDeclarationRoot =
@@ -2460,11 +2478,11 @@ JsxSpreadAttribute =
 
 // <a {b} />
 //    ^^^
-// Astro-only shorthand attribute. `{name}` is equivalent to `name={name}`.
+// Astro-only shorthand attribute. `{expr}` is printed as written.
 // Only valid when the parser is in an Astro-embedded context.
 JsxShorthandAttribute =
 	'{'
-	name: JsReferenceIdentifier
+	expression: AnyJsExpression
 	'}'
 
 // ==================================

@@ -8,6 +8,28 @@ use camino::Utf8Path;
 )]
 pub struct HtmlFileSource {
     variant: HtmlVariant,
+    /// Marks HTML embedded inside another language. This affects the formatting.
+    embedding_kind: HtmlEmbeddingKind,
+}
+
+/// The language that embeds an HTML source.
+#[cfg_attr(feature = "schema", derive(schemars::JsonSchema))]
+#[derive(
+    Debug, Clone, Default, Copy, Eq, PartialEq, Hash, serde::Serialize, serde::Deserialize,
+)]
+pub enum HtmlEmbeddingKind {
+    #[default]
+    None,
+    /// An HTML block of a Markdown file. The formatter keeps the block's first
+    /// line as one tag on its own line, because Markdown recognizes some HTML
+    /// blocks by that line.
+    MarkdownBlock,
+}
+
+impl HtmlEmbeddingKind {
+    pub const fn is_markdown_block(&self) -> bool {
+        matches!(self, Self::MarkdownBlock)
+    }
 }
 
 #[cfg_attr(feature = "schema", derive(schemars::JsonSchema))]
@@ -45,11 +67,11 @@ impl HtmlFileSource {
     pub fn html() -> Self {
         Self {
             variant: HtmlVariant::default(),
+            embedding_kind: HtmlEmbeddingKind::None,
         }
     }
 
-    /// Returns `true` if the current file is `.html` and doesn't support
-    /// any text expression capability
+    /// Returns `true` for standard HTML sources without text-expression support.
     pub const fn is_html(&self) -> bool {
         matches!(self.variant, HtmlVariant::Standard(_))
     }
@@ -103,31 +125,45 @@ impl HtmlFileSource {
     pub fn html_with_text_expressions() -> Self {
         Self {
             variant: HtmlVariant::Standard(HtmlTextExpressions::Double),
+            embedding_kind: HtmlEmbeddingKind::None,
         }
     }
 
     pub fn astro() -> Self {
         Self {
             variant: HtmlVariant::Astro,
+            embedding_kind: HtmlEmbeddingKind::None,
         }
     }
 
     pub fn vue() -> Self {
         Self {
             variant: HtmlVariant::Vue,
+            embedding_kind: HtmlEmbeddingKind::None,
         }
     }
 
     pub fn svelte() -> Self {
         Self {
             variant: HtmlVariant::Svelte,
+            embedding_kind: HtmlEmbeddingKind::None,
         }
     }
 
     pub fn angular() -> Self {
         Self {
             variant: HtmlVariant::Angular,
+            embedding_kind: HtmlEmbeddingKind::None,
         }
+    }
+
+    pub const fn with_embedding_kind(mut self, kind: HtmlEmbeddingKind) -> Self {
+        self.embedding_kind = kind;
+        self
+    }
+
+    pub const fn as_embedding_kind(&self) -> &HtmlEmbeddingKind {
+        &self.embedding_kind
     }
 
     pub fn set_variant(&mut self, variant: HtmlVariant) {
@@ -146,7 +182,7 @@ impl HtmlFileSource {
     pub fn try_from_extension(extension: &str) -> Result<Self, FileSourceError> {
         // We assume the file extension is normalized to lowercase
         match extension {
-            "html" | "svg" => Ok(Self::html()),
+            "htm" | "html" | "svg" => Ok(Self::html()),
             "astro" => Ok(Self::astro()),
             "vue" => Ok(Self::vue()),
             "svelte" => Ok(Self::svelte()),

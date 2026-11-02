@@ -67,13 +67,53 @@ fn bench_drizzle_typebox_cold_module(bencher: Bencher) {
         });
 }
 
+#[divan::bench(args = integration::EFFECT_ARKTYPE_CASES)]
+fn bench_effect_arktype_cold_module(bencher: Bencher, case: &str) {
+    bencher
+        .with_inputs(|| integration::build_db(integration::EFFECT_ARKTYPE_FILES, case))
+        .bench_local_values(|(db, module)| {
+            divan::black_box(infer_module_types_bottom_up(&db, module));
+            db
+        });
+}
+
+#[divan::bench(args = integration::KYSELY_TS_PATTERN_CASES)]
+fn bench_kysely_ts_pattern_cold_module(bencher: Bencher, case: &str) {
+    bencher
+        .with_inputs(|| integration::build_db(integration::KYSELY_TS_PATTERN_FILES, case))
+        .bench_local_values(|(db, module)| {
+            divan::black_box(infer_module_types_bottom_up(&db, module));
+            db
+        });
+}
+
+#[divan::bench(args = integration::HONO_VALIBOT_CASES)]
+fn bench_hono_valibot_cold_module(bencher: Bencher, case: &str) {
+    bencher
+        .with_inputs(|| integration::build_db(integration::HONO_VALIBOT_FILES, case))
+        .bench_local_values(|(db, module)| {
+            divan::black_box(infer_module_types_bottom_up(&db, module));
+            db
+        });
+}
+
+#[divan::bench(args = integration::TRPC_ZOD_QUERY_CASES)]
+fn bench_trpc_zod_query_cold_module(bencher: Bencher, case: &str) {
+    bencher
+        .with_inputs(|| integration::build_db(integration::TRPC_ZOD_QUERY_FILES, case))
+        .bench_local_values(|(db, module)| {
+            divan::black_box(infer_module_types_bottom_up(&db, module));
+            db
+        });
+}
+
 #[cfg(target_os = "windows")]
 #[global_allocator]
 static GLOBAL: mimalloc::MiMalloc = mimalloc::MiMalloc;
 
 #[cfg(all(
     any(target_os = "macos", target_os = "linux"),
-    not(target_env = "musl"),
+    not(all(target_env = "musl", target_arch = "aarch64")),
 ))]
 #[global_allocator]
 static GLOBAL: tikv_jemallocator::Jemalloc = tikv_jemallocator::Jemalloc;
@@ -613,7 +653,7 @@ fn overload_binding_range_by_name(
                 .is_ok_and(|token| token.text_trimmed() == name)
         })
         .find_map(|binding| {
-            let range = binding.syntax().text_trimmed_range();
+            let range = binding.range();
             let ty = inferred
                 .binding_type_data
                 .get(&range)

@@ -7,53 +7,54 @@ use std::borrow::Cow;
 use std::str::FromStr;
 
 use biome_js_syntax::{
-    AnyJsArrayBindingPatternElement, AnyJsArrayElement, AnyJsArrowFunctionParameters, AnyJsBinding,
-    AnyJsBindingPattern, AnyJsCallArgument, AnyJsClassMember, AnyJsClassMemberName,
-    AnyJsConstructorParameter, AnyJsDeclaration, AnyJsDeclarationClause,
+    AnyJsArrayBindingPatternElement, AnyJsArrayElement, AnyJsArrowFunctionParameters,
+    AnyJsAssignmentPattern, AnyJsBinding, AnyJsBindingPattern, AnyJsCallArgument, AnyJsClassMember,
+    AnyJsClassMemberName, AnyJsConstructorParameter, AnyJsDeclaration, AnyJsDeclarationClause,
     AnyJsExportDefaultDeclaration, AnyJsExpression, AnyJsFormalParameter, AnyJsFunction,
     AnyJsFunctionBody, AnyJsLiteralExpression, AnyJsName, AnyJsObjectBindingPatternMember,
-    AnyJsObjectMember, AnyJsObjectMemberName, AnyJsParameter, AnyTsModuleName, AnyTsName,
-    AnyTsReturnType, AnyTsTupleTypeElement, AnyTsType, AnyTsTypeMember,
-    AnyTsTypePredicateParameterName, ClassMemberName, JsArrayBindingPattern,
-    JsArrowFunctionExpression, JsBinaryExpression, JsBinaryOperator, JsCallArgumentList,
-    JsCallArguments, JsCallExpression, JsClassDeclaration, JsClassExportDefaultDeclaration,
-    JsClassExpression, JsClassMemberList, JsConstructorParameters, JsExtendsClause,
-    JsForInStatement, JsForOfStatement, JsForVariableDeclaration, JsFormalParameter,
-    JsFunctionBody, JsFunctionDeclaration, JsFunctionExpression, JsGetterObjectMember,
-    JsInitializerClause, JsLogicalExpression, JsLogicalOperator, JsMethodObjectMember,
-    JsNewExpression, JsObjectBindingPattern, JsObjectExpression, JsParameterList, JsParameters,
-    JsParenthesizedExpression, JsPropertyClassMember, JsPropertyObjectMember,
-    JsReferenceIdentifier, JsRestParameter, JsReturnStatement, JsSetterObjectMember, JsSyntaxKind,
-    JsSyntaxNode, JsSyntaxToken, JsUnaryExpression, JsUnaryOperator, JsVariableDeclaration,
-    JsVariableDeclarator, TsDeclareFunctionDeclaration, TsExternalModuleDeclaration,
-    TsInstantiationExpression, TsInterfaceDeclaration, TsModuleDeclaration,
-    TsPropertyParameterModifierList, TsReferenceType, TsReturnTypeAnnotation,
-    TsTypeAliasDeclaration, TsTypeAnnotation, TsTypeArguments, TsTypeList, TsTypeParameter,
-    TsTypeParameters, TsTypeofType, inner_string_text, unescape_js_string,
+    AnyJsObjectMember, AnyJsObjectMemberName, AnyJsParameter, AnyJsTemplateElement,
+    AnyTsModuleName, AnyTsName, AnyTsReturnType, AnyTsTupleTypeElement, AnyTsType, AnyTsTypeMember,
+    AnyTsTypePredicateParameterName, ClassMemberName, JsArrayBindingPattern, JsArrayExpression,
+    JsArrowFunctionExpression, JsAssignmentExpression, JsBinaryExpression, JsBinaryOperator,
+    JsCallArgumentList, JsCallArguments, JsCallExpression, JsClassDeclaration,
+    JsClassExportDefaultDeclaration, JsClassExpression, JsClassMemberList, JsConstructorParameters,
+    JsExtendsClause, JsForInStatement, JsForOfStatement, JsForVariableDeclaration,
+    JsFormalParameter, JsFunctionBody, JsFunctionDeclaration, JsFunctionExpression,
+    JsGetterObjectMember, JsInitializerClause, JsLogicalExpression, JsLogicalOperator,
+    JsMethodObjectMember, JsNewExpression, JsObjectBindingPattern, JsObjectExpression,
+    JsParameterList, JsParameters, JsParenthesizedExpression, JsPropertyClassMember,
+    JsPropertyObjectMember, JsReferenceIdentifier, JsRestParameter, JsReturnStatement,
+    JsSetterObjectMember, JsSyntaxKind, JsSyntaxNode, JsSyntaxToken, JsTemplateExpression,
+    JsUnaryExpression, JsUnaryOperator, JsVariableDeclaration, JsVariableDeclarator,
+    TsDeclareFunctionDeclaration, TsExternalModuleDeclaration, TsInstantiationExpression,
+    TsInterfaceDeclaration, TsMappedType, TsModuleDeclaration, TsPropertyParameterModifierList,
+    TsReferenceType, TsReturnTypeAnnotation, TsSatisfiesExpression, TsTypeAliasDeclaration,
+    TsTypeAnnotation, TsTypeArguments, TsTypeList, TsTypeParameter, TsTypeParameters, TsTypeofType,
+    inner_string_text, unescape_js_string,
 };
 use biome_rowan::{AstNode, AstSeparatedList, SyntaxResult, Text, TextRange, TokenText};
 use rustc_hash::FxHashMap;
 
 use crate::globals::{
-    GLOBAL_GLOBAL_ID, GLOBAL_INSTANCEOF_PROMISE_ID, GLOBAL_NUMBER_ID, GLOBAL_STRING_ID,
-    GLOBAL_UNDEFINED_ID,
+    GLOBAL_GLOBAL_ID, GLOBAL_INSTANCEOF_PROMISE_ID, GLOBAL_NUMBER_KEYWORD_ID,
+    GLOBAL_STRING_KEYWORD_ID, GLOBAL_UNDEFINED_ID,
 };
 use crate::literal::{BooleanLiteral, NumberLiteral, RegexpLiteral, StringLiteral};
 use crate::{
     AssertsReturnType, CallArgumentType, Class, Constructor, ConstructorParameter,
     DestructureField, Function, FunctionParameter, FunctionParameterBinding, GenericTypeParameter,
-    IndexedAccessType, Interface, Intersection, Literal, Module, NamedFunctionParameter, Namespace,
-    Object, Path, PatternFunctionParameter, PredicateReturnType, RawTypeCollector, RawTypeId,
-    ReturnType, ScopeId, Tuple, TupleElementType, TypeData, TypeInstance, TypeMember,
-    TypeMemberAccessibility, TypeMemberKind, TypeOperator, TypeOperatorType, TypeReference,
-    TypeReferenceQualifier, TypeofAdditionExpression, TypeofAwaitExpression,
-    TypeofBitwiseNotExpression, TypeofCallArgumentExpression, TypeofCallExpression,
-    TypeofComputedMemberExpression, TypeofConditionalExpression, TypeofDestructureExpression,
-    TypeofExpression, TypeofIndexExpression, TypeofIterableValueOfExpression,
-    TypeofLogicalAndExpression, TypeofLogicalOrExpression, TypeofNewExpression,
-    TypeofNullishCoalescingExpression, TypeofParameterExpression, TypeofStaticMemberExpression,
-    TypeofThisOrSuperExpression, TypeofTypeofExpression, TypeofUnaryMinusExpression, TypeofValue,
-    Union,
+    IndexedAccessType, Interface, Intersection, Literal, MappedType, MappedTypeKeys,
+    MappedTypeModifier, Module, NamedFunctionParameter, Namespace, Object, Path,
+    PatternFunctionParameter, PredicateReturnType, RawTypeCollector, RawTypeId, ReturnType,
+    ScopeId, Tuple, TupleElementType, TypeData, TypeInstance, TypeMember, TypeMemberAccessibility,
+    TypeMemberKind, TypeOperator, TypeOperatorType, TypeReference, TypeReferenceQualifier,
+    TypeofAdditionExpression, TypeofAwaitExpression, TypeofBitwiseNotExpression,
+    TypeofCallArgumentExpression, TypeofCallExpression, TypeofComputedMemberExpression,
+    TypeofConditionalExpression, TypeofDestructureExpression, TypeofExpression,
+    TypeofIndexExpression, TypeofIterableValueOfExpression, TypeofLogicalAndExpression,
+    TypeofLogicalOrExpression, TypeofNewExpression, TypeofNullishCoalescingExpression,
+    TypeofParameterExpression, TypeofStaticMemberExpression, TypeofThisOrSuperExpression,
+    TypeofTypeofExpression, TypeofUnaryMinusExpression, TypeofValue, Union,
 };
 
 const MAX_CONST_ASSERTION_DEPTH: usize = 50;
@@ -467,7 +468,7 @@ impl TypeData {
                         }),
                     })
                     .collect(),
-                is_inferred_array: true,
+                is_inferred_array: !is_in_tuple_context(expr),
             })),
             AnyJsExpression::JsArrowFunctionExpression(expr) => {
                 Self::from_js_arrow_function_expression(collector, scope_id, expr)
@@ -616,6 +617,7 @@ impl TypeData {
             AnyJsExpression::JsSuperExpression(_) => Self::from(TypeofExpression::Super(
                 TypeofThisOrSuperExpression::from_any_js_expression(scope_id, expr),
             )),
+            AnyJsExpression::JsTemplateExpression(expr) => Self::from_js_template_expression(expr),
             AnyJsExpression::JsThisExpression(_) => Self::from(TypeofExpression::This(
                 TypeofThisOrSuperExpression::from_any_js_expression(scope_id, expr),
             )),
@@ -797,10 +799,7 @@ impl TypeData {
                     .map(|ty| TypeReference::from_any_ts_type(collector, scope_id, &ty))
                     .collect(),
             ))),
-            AnyTsType::TsMappedType(_) => {
-                // TODO: Handle mapped types (`type T<U> = { [K in keyof U]: V }`).
-                Self::unknown()
-            }
+            AnyTsType::TsMappedType(ty) => Self::from_ts_mapped_type(collector, scope_id, ty),
             AnyTsType::TsNeverType(_) => Self::NeverKeyword,
             AnyTsType::TsNonPrimitiveType(_) => Self::ObjectKeyword,
             AnyTsType::TsNullLiteralType(_) => Self::Null,
@@ -814,7 +813,7 @@ impl TypeData {
                 }
                 Err(_) => Self::unknown(),
             },
-            AnyTsType::TsNumberType(_) => Self::reference(GLOBAL_NUMBER_ID),
+            AnyTsType::TsNumberType(_) => Self::reference(GLOBAL_NUMBER_KEYWORD_ID),
             AnyTsType::TsObjectType(ty) => {
                 let mut has_unknown_members = false;
                 let members = ty
@@ -842,7 +841,7 @@ impl TypeData {
                 Ok(token) => Literal::String(token.text().into()).into(),
                 Err(_) => Self::unknown(),
             },
-            AnyTsType::TsStringType(_) => Self::reference(GLOBAL_STRING_ID),
+            AnyTsType::TsStringType(_) => Self::reference(GLOBAL_STRING_KEYWORD_ID),
             AnyTsType::TsSymbolType(_) => Self::Symbol,
             AnyTsType::TsTemplateLiteralType(ty) => {
                 Self::Literal(Box::new(Literal::Template(ty.to_string().into())))
@@ -1359,6 +1358,28 @@ impl TypeData {
         })
     }
 
+    pub fn from_js_template_expression(expr: &JsTemplateExpression) -> Self {
+        // A tag function may return any type.
+        if expr.tag().is_some() {
+            return Self::unknown();
+        }
+
+        // Only templates without substitutions have a literal value.
+        let mut elements = expr.elements().into_iter();
+        let text = match (elements.next(), elements.next()) {
+            (None, _) => Some(Text::default()),
+            (Some(AnyJsTemplateElement::JsTemplateChunkElement(chunk)), None) => {
+                text_from_token(chunk.template_chunk_token())
+            }
+            _ => None,
+        };
+
+        match text {
+            Some(text) => Self::Literal(Box::new(Literal::String(StringLiteral::from(text)))),
+            None => Self::string(),
+        }
+    }
+
     pub fn from_js_unary_expression(
         collector: &mut dyn RawTypeCollector,
         scope_id: ScopeId,
@@ -1560,6 +1581,69 @@ impl TypeData {
             }),
             None => Self::from_any_ts_type(collector, scope_id, &decl.ty().ok()?),
         })
+    }
+
+    /// Collects a mapped type such as `{ [K in keyof T]?: T[K] }`.
+    ///
+    /// The mapped type declares `K` in its own scope, so its keys and property
+    /// type are collected from that scope. Key remapping with an `as` clause
+    /// is not supported and results in an unknown type.
+    pub fn from_ts_mapped_type(
+        collector: &mut dyn RawTypeCollector,
+        scope_id: ScopeId,
+        ty: &TsMappedType,
+    ) -> Self {
+        if ty.as_clause().is_some() {
+            return Self::unknown();
+        }
+        let Some(type_parameter) = GenericTypeParameter::from_ts_mapped_type(ty) else {
+            return Self::unknown();
+        };
+
+        let scope_id = collector.scope_for_node(ty.syntax()).unwrap_or(scope_id);
+        let type_parameter = collector
+            .register_and_resolve(Self::from(type_parameter))
+            .into();
+        // `[K in (keyof T)]` iterates the same keys as `[K in keyof T]`.
+        let mut keys = ty.keys_type();
+        while let Ok(AnyTsType::TsParenthesizedType(parenthesized)) = keys {
+            keys = parenthesized.ty();
+        }
+        let keys = match keys {
+            Ok(AnyTsType::TsTypeOperatorType(operator))
+                if operator
+                    .operator_token()
+                    .is_ok_and(|token| token.text_trimmed() == "keyof") =>
+            {
+                MappedTypeKeys::Keyof(
+                    operator
+                        .ty()
+                        .map(|ty| TypeReference::from_any_ts_type(collector, scope_id, &ty))
+                        .unwrap_or_default(),
+                )
+            }
+            keys => MappedTypeKeys::Type(
+                keys.map(|keys| TypeReference::from_any_ts_type(collector, scope_id, &keys))
+                    .unwrap_or_default(),
+            ),
+        };
+        let property_ty = ty
+            .mapped_type()
+            .and_then(|annotation| annotation.ty().ok())
+            .map(|ty| TypeReference::from_any_ts_type(collector, scope_id, &ty))
+            .unwrap_or_default();
+
+        Self::MappedType(Box::new(MappedType {
+            type_parameter,
+            keys,
+            ty: property_ty,
+            readonly_modifier: ty
+                .readonly_modifier()
+                .map(|modifier| mapped_type_modifier(modifier.operator_token())),
+            optional_modifier: ty
+                .optional_modifier()
+                .map(|modifier| mapped_type_modifier(modifier.operator_token())),
+        }))
     }
 
     pub fn from_ts_typeof_type(
@@ -1979,6 +2063,22 @@ impl GenericTypeParameter {
             .ok()
     }
 
+    /// Builds the type parameter a mapped type declares, such as `K` in
+    /// `{ [K in keyof T]: T[K] }`.
+    ///
+    /// The parameter carries no constraint. The mapped type records the keys
+    /// it iterates separately, and the parameter must be identical wherever
+    /// it is built so references to `K` can be substituted.
+    pub fn from_ts_mapped_type(ty: &TsMappedType) -> Option<Self> {
+        let name = ty.property_name().ok()?.ident_token().ok()?;
+        Some(Self {
+            name: name.token_text_trimmed().into(),
+            constraint: TypeReference::unknown(),
+            default: TypeReference::unknown(),
+            is_const: false,
+        })
+    }
+
     pub fn params_from_ts_type_parameters(
         collector: &mut dyn RawTypeCollector,
         scope_id: ScopeId,
@@ -2014,11 +2114,18 @@ impl ReturnType {
                                 Text::new_static("this")
                             }
                         },
-                        ty: ty
-                            .predicate()
-                            .and_then(|asserts| asserts.ty().ok())
-                            .map(|ty| TypeReference::from_any_ts_type(collector, scope_id, &ty))
-                            .unwrap_or_default(),
+                        ty: match ty.predicate() {
+                            Some(predicate) => predicate
+                                .ty()
+                                .ok()
+                                .map(|ty| TypeReference::from_any_ts_type(collector, scope_id, &ty))
+                                .unwrap_or_default(),
+                            // Bare assertions require truthiness, rather than a specific type.
+                            // `Conditional` marks a value whose truthiness decides a condition,
+                            // and no type annotation resolves to it, so it cannot be confused
+                            // with an `asserts value is T` predicate.
+                            None => collector.reference_to_owned_data(TypeData::Conditional),
+                        },
                     })))
                 })
             }
@@ -3224,6 +3331,14 @@ fn getter_return_type(
     collector.reference_to_owned_data(return_ty)
 }
 
+/// A modifier without an operator, such as `?`, adds like `+?` does.
+fn mapped_type_modifier(operator_token: Option<JsSyntaxToken>) -> MappedTypeModifier {
+    match operator_token {
+        Some(token) if token.kind() == JsSyntaxKind::MINUS => MappedTypeModifier::Remove,
+        _ => MappedTypeModifier::Add,
+    }
+}
+
 #[inline]
 fn generic_params_from_ts_type_params(
     collector: &mut dyn RawTypeCollector,
@@ -3433,6 +3548,54 @@ fn type_data_from_const_assertion_expression(
         .resolve_expression(scope_id, &expression)
         .into_owned();
     apply_deep_const(collector, inner_type)
+}
+
+/// Returns whether TypeScript infers the array expression as a tuple rather
+/// than an array because of where it appears:
+///
+/// ```ts
+/// const [first, second] = [1, "a"];
+/// [first, second] = [second, first];
+/// call(...[1, 2]);
+/// [1, "a"] satisfies [number, string];
+/// ```
+fn is_in_tuple_context(expr: &JsArrayExpression) -> bool {
+    let mut node = expr.syntax().clone();
+    let parent = loop {
+        let Some(parent) = node.parent() else {
+            return false;
+        };
+        if parent.kind() != JsSyntaxKind::JS_PARENTHESIZED_EXPRESSION {
+            break parent;
+        }
+        node = parent;
+    };
+    if let Some(initializer) = JsInitializerClause::cast_ref(&parent) {
+        let Some(owner) = initializer.syntax().parent() else {
+            return false;
+        };
+        let pattern = JsVariableDeclarator::cast_ref(&owner)
+            .and_then(|declarator| declarator.id().ok())
+            .or_else(|| {
+                JsFormalParameter::cast_ref(&owner).and_then(|parameter| parameter.binding().ok())
+            });
+        return matches!(pattern, Some(AnyJsBindingPattern::JsArrayBindingPattern(_)));
+    }
+    if let Some(assignment) = JsAssignmentExpression::cast_ref(&parent) {
+        return matches!(
+            assignment.left(),
+            Ok(AnyJsAssignmentPattern::JsArrayAssignmentPattern(_))
+        );
+    }
+    if parent.kind() == JsSyntaxKind::JS_SPREAD {
+        return parent
+            .parent()
+            .is_some_and(|list| list.kind() == JsSyntaxKind::JS_CALL_ARGUMENT_LIST);
+    }
+    if let Some(satisfies) = TsSatisfiesExpression::cast_ref(&parent) {
+        return matches!(satisfies.ty(), Ok(AnyTsType::TsTupleType(_)));
+    }
+    false
 }
 
 /// Applies const assertion conversion to inferred tuple and object types.

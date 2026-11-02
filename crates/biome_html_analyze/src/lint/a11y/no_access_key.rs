@@ -10,12 +10,11 @@ use biome_rule_options::no_access_key::NoAccessKeyOptions;
 use crate::HtmlRuleAction;
 
 declare_lint_rule! {
-    /// Enforce that the `accesskey` attribute is not used on any HTML element.
+    /// Disallow the `accesskey` attribute.
     ///
-    /// The `accesskey` assigns a keyboard shortcut to the current element. However, the `accesskey` value
-    /// can conflict with keyboard commands used by screen readers and keyboard-only users, which leads to
-    /// inconsistent keyboard actions across applications. To avoid accessibility complications,
-    /// this rule suggests users remove the `accesskey` attribute on elements.
+    /// `accesskey` assigns a keyboard shortcut to an element. The shortcut can conflict with browser,
+    /// operating-system, or screen-reader commands, and the activation keys differ between browsers.
+    /// Remove the attribute and provide keyboard access through standard interactive elements.
     ///
     /// ## Examples
     ///
@@ -31,6 +30,12 @@ declare_lint_rule! {
     ///
     /// ```html,expect_diagnostic
     /// <button accesskey="n">Next</button>
+    /// ```
+    ///
+    /// ### Valid
+    ///
+    /// ```html
+    /// <button>Next</button>
     /// ```
     ///
     /// ## Resources
@@ -72,13 +77,12 @@ impl Rule for NoAccessKey {
                 rule_category!(),
                 node.syntax().text_trimmed_range(),
                 markup! {
-                    "Avoid the "<Emphasis>"accesskey"</Emphasis>" attribute to reduce inconsistencies between \
-                    keyboard shortcuts and screen reader keyboard commands."
+                    "Avoid the "<Emphasis>"accesskey"</Emphasis>" attribute."
                 },
             ).note(
                 markup! {
                     "Assigning keyboard shortcuts using the "<Emphasis>"accesskey"</Emphasis>" attribute leads to \
-                    inconsistent keyboard actions across applications."
+                    inconsistent keyboard actions across applications, and the shortcuts can conflict with screen reader keyboard commands."
                 },
             )
         )

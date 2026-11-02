@@ -67,6 +67,18 @@ pub(crate) fn expected_closing_tag(p: &HtmlParser, range: TextRange) -> ParseDia
     expected_node("closing tag", range, p).into_diagnostic(p)
 }
 
+/// The parser encountered a closing tag at the top level of the document, where
+/// there is no element for it to close.
+///
+/// ```html
+/// <div></div></span>
+///            ^^^^^^^ no element to close
+/// ```
+pub(crate) fn unexpected_closing_tag(p: &HtmlParser, range: TextRange) -> ParseDiagnostic {
+    p.err_builder("This closing tag has no matching opening tag.", range)
+        .with_hint("Remove the closing tag, or add the opening tag it belongs to.")
+}
+
 pub(crate) fn expected_matching_closing_tag(p: &HtmlParser, range: TextRange) -> ParseDiagnostic {
     expected_node("matching closing tag", range, p).into_diagnostic(p)
 }
@@ -170,6 +182,18 @@ pub(crate) fn expected_vue_v_for_expression(p: &HtmlParser, range: TextRange) ->
         range,
     )
     .with_hint(markup!("Add the collection or expression to iterate over."))
+}
+
+pub(crate) fn expected_vue_v_for_default(p: &HtmlParser, range: TextRange) -> ParseDiagnostic {
+    expected_node("default value", range, p).into_diagnostic(p)
+}
+
+pub(crate) fn unexpected_vue_v_for_rest_default(
+    p: &HtmlParser,
+    range: TextRange,
+) -> ParseDiagnostic {
+    p.err_builder("A rest binding can't have a default value.", range)
+        .with_hint(markup!("Remove the default value."))
 }
 
 pub(crate) fn expected_vue_v_for_binding(p: &HtmlParser, range: TextRange) -> ParseDiagnostic {

@@ -15,10 +15,10 @@ const RESOLUTION_MEDIA_FEATURE_NAMES: [&str; 3] =
     ["resolution", "min-resolution", "max-resolution"];
 
 declare_lint_rule! {
-    /// Disallow unknown CSS units.
+    /// Disallow unrecognized CSS units.
     ///
-    /// For details on known CSS units, see the [MDN web docs](https://developer.mozilla.org/en-US/docs/Learn/CSS/Building_blocks/Values_and_units#lengths).
-    ///
+    /// A unit follows a number and describes its measurement, as in `10px`, `2rem`, or `500ms`.
+    /// See [MDN's value and unit guide](https://developer.mozilla.org/en-US/docs/Learn/CSS/Building_blocks/Values_and_units#lengths).
     ///
     /// ## Examples
     ///
@@ -209,6 +209,9 @@ impl Rule for NoUnknownUnit {
             )
             .note(markup! {
                 "See "<Hyperlink href="https://developer.mozilla.org/en-US/docs/Learn/CSS/Building_blocks/Values_and_units#lengths">"MDN web docs"</Hyperlink>" for more details."
+            })
+            .note(markup! {
+                "Browsers ignore a declaration that contains an unknown unit, so the value is not applied."
             })
             .footer_list(
                 markup! {

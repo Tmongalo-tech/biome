@@ -7,11 +7,13 @@ pub use crate::analyzer::linter::*;
 use crate::analyzer::presets::PresetConfig;
 use biome_analyze::options::RuleOptions;
 use biome_analyze::{FixKind, PLUGIN_GROUP, Rule, RuleCategory, RuleDomain, RuleFilter};
+use biome_console::markup;
 use biome_deserialize::{
     Deserializable, DeserializableType, DeserializableValue, DeserializationContext, Merge,
 };
 use biome_deserialize_macros::{Deserializable, Merge};
 use biome_diagnostics::Severity;
+use biome_string_case::Case;
 use rustc_hash::FxHashSet;
 #[cfg(feature = "schema")]
 use schemars::JsonSchema;
@@ -27,12 +29,12 @@ pub enum RuleConfiguration<T: Default + Merge> {
     WithOptions(RuleWithOptions<T>),
 }
 impl<T: Default + Merge + Deserializable> Deserializable for RuleConfiguration<T> {
-    fn deserialize(
-        ctx: &mut dyn DeserializationContext,
-        value: &impl DeserializableValue,
+    fn deserialize<V: DeserializableValue>(
+        ctx: &mut dyn DeserializationContext<State = V::State>,
+        value: &V,
         rule_name: &str,
     ) -> Option<Self> {
-        if value.visitable_type()? == DeserializableType::Str {
+        if value.visitable_type(ctx)? == DeserializableType::Str {
             Deserializable::deserialize(ctx, value, rule_name).map(Self::Plain)
         } else {
             Deserializable::deserialize(ctx, value, rule_name).map(|rule| Self::WithOptions(rule))
@@ -136,12 +138,12 @@ impl<T: Default + Merge> Default for RuleFixConfiguration<T> {
     }
 }
 impl<T: Default + Merge + Deserializable> Deserializable for RuleFixConfiguration<T> {
-    fn deserialize(
-        ctx: &mut dyn DeserializationContext,
-        value: &impl DeserializableValue,
+    fn deserialize<V: DeserializableValue>(
+        ctx: &mut dyn DeserializationContext<State = V::State>,
+        value: &V,
         rule_name: &str,
     ) -> Option<Self> {
-        if value.visitable_type()? == DeserializableType::Str {
+        if value.visitable_type(ctx)? == DeserializableType::Str {
             Deserializable::deserialize(ctx, value, rule_name).map(Self::Plain)
         } else {
             Deserializable::deserialize(ctx, value, rule_name).map(|rule| Self::WithOptions(rule))
@@ -286,14 +288,15 @@ impl From<RuleAssistPlainConfiguration> for Severity {
 #[serde(rename_all = "camelCase")]
 pub enum RulePlainConfiguration {
     #[default]
+    /// Disables the rule.
     Off,
-    /// Enables the rule using the default severity of the rule
+    /// Enables the rule using its individual default severity.
     On,
-    /// Enables the rule, and it will emit a diagnostic with information severity
+    /// Enables the rule and emits diagnostics with information severity.
     Info,
-    /// Enables the rule, and it will emit a diagnostic with warning severity
+    /// Enables the rule and emits diagnostics with warning severity.
     Warn,
-    /// Enables the rule, and it will emit a diagnostic with error severity
+    /// Enables the rule and emits diagnostics with error severity.
     Error,
 }
 
@@ -304,12 +307,12 @@ pub enum RuleAssistConfiguration<T: Default> {
     WithOptions(RuleAssistWithOptions<T>),
 }
 impl<T: Default + Deserializable> Deserializable for RuleAssistConfiguration<T> {
-    fn deserialize(
-        ctx: &mut dyn DeserializationContext,
-        value: &impl DeserializableValue,
+    fn deserialize<V: DeserializableValue>(
+        ctx: &mut dyn DeserializationContext<State = V::State>,
+        value: &V,
         name: &str,
     ) -> Option<Self> {
-        if value.visitable_type()? == DeserializableType::Str {
+        if value.visitable_type(ctx)? == DeserializableType::Str {
             Deserializable::deserialize(ctx, value, name).map(Self::Plain)
         } else {
             Deserializable::deserialize(ctx, value, name).map(|rule| Self::WithOptions(rule))
@@ -407,7 +410,9 @@ where
 #[serde(rename_all = "camelCase")]
 pub enum RuleAssistPlainConfiguration {
     #[default]
+    /// Disables the assist rule.
     Off,
+    /// Enables the assist rule.
     On,
 }
 impl RuleAssistPlainConfiguration {
@@ -462,7 +467,8 @@ where
             "properties": {
                 "level": level_schema,
                 "options": options_schema,
-            }
+            },
+            "additionalProperties": false,
         })
     }
 }
@@ -522,7 +528,8 @@ pub struct RuleWithFixOptions<T: Default + Merge> {
     /// The severity of the emitted diagnostics by the rule
     #[deserializable(required)]
     pub level: RulePlainConfiguration,
-    /// The kind of the code actions emitted by the rule
+    /// Controls the applicability of the rule's fix. `none` suppresses the fix, while `safe` and
+    /// `unsafe` reclassify its applicability. This setting does not change the fix itself.
     #[serde(skip_serializing_if = "Option::is_none")]
     pub fix: Option<FixKind>,
     /// Rule's options
@@ -550,7 +557,12 @@ where
     fn json_schema(generator: &mut schemars::generate::SchemaGenerator) -> schemars::Schema {
         // Generate schemas for the inner types
         let level_schema = generator.subschema_for::<RulePlainConfiguration>();
-        let fix_schema = generator.subschema_for::<Option<FixKind>>();
+        let mut fix_schema = generator.subschema_for::<Option<FixKind>>();
+        fix_schema.insert(
+            "description".to_string(),
+            "Controls the applicability of the rule's fix. `none` suppresses the fix, while `safe` and `unsafe` reclassify its applicability. This setting does not change the fix itself."
+                .into(),
+        );
         let options_schema = generator.subschema_for::<T>();
 
         // Create an object schema with level, fix, and options properties
@@ -697,6 +709,44 @@ impl Display for RuleSelector {
             Self::Group(group) => write!(f, "{group}",),
             Self::Rule(group, rule) => write!(f, "{group}/{rule}",),
         }
+    }
+}
+
+impl biome_console::fmt::Display for AnalyzerSelector {
+    fn fmt(&self, f: &mut biome_console::fmt::Formatter) -> std::io::Result<()> {
+        match self {
+            Self::Rule(rule) => f.write_markup(markup! {{rule}}),
+            Self::Domain(domain) => f.write_markup(markup! {{domain}}),
+            Self::Plugin => f.write_str("plugin/plugin"),
+        }
+    }
+}
+
+impl biome_console::fmt::Display for RuleSelector {
+    fn fmt(&self, f: &mut biome_console::fmt::Formatter) -> std::io::Result<()> {
+        match self {
+            Self::Group(group) => {
+                let link = format!("https://biomejs.dev/linter/#{}", group);
+                f.write_markup(markup! {
+                    <Hyperlink href={link}>{group}</Hyperlink>
+                })
+            }
+            Self::Rule(group, rule) => {
+                let rule = Case::Kebab.convert(rule);
+                f.write_markup(markup! {
+                    <Hyperlink href={format!("https://biomejs.dev/linter/rules/{}/", rule)}>{group}"/"{rule}</Hyperlink>
+                })
+            }
+        }
+    }
+}
+
+impl biome_console::fmt::Display for DomainSelector {
+    fn fmt(&self, f: &mut biome_console::fmt::Formatter) -> std::io::Result<()> {
+        let link = format!("https://biomejs.dev/linter/domains/#{}", self.0);
+        f.write_markup(markup! {
+            <Hyperlink href={link}>{Case::Upper.convert(self.0)}</Hyperlink>
+        })
     }
 }
 
@@ -1064,15 +1114,15 @@ where
 #[serde(rename_all = "camelCase")]
 pub enum GroupPlainConfiguration {
     #[default]
-    /// It disables all the rules of this group
+    /// Disables all rules in the group.
     Off,
-    /// It enables all the rules of this group, with their default severity
+    /// Enables all rules in the group using each rule's individual default severity.
     On,
-    /// It enables all the rules of this group, and set their severity to "info"
+    /// Enables all rules in the group with information severity.
     Info,
-    /// It enables all the rules of this group, and set their severity to "warn"
+    /// Enables all rules in the group with warning severity.
     Warn,
-    /// It enables all the rules of this group, and set their severity to "error+"
+    /// Enables all rules in the group with error severity.
     Error,
 }
 
@@ -1199,12 +1249,12 @@ where
 }
 
 impl<G: Deserializable> Deserializable for SeverityOrGroup<G> {
-    fn deserialize(
-        ctx: &mut dyn DeserializationContext,
-        value: &impl DeserializableValue,
+    fn deserialize<V: DeserializableValue>(
+        ctx: &mut dyn DeserializationContext<State = V::State>,
+        value: &V,
         name: &str,
     ) -> Option<Self> {
-        if value.visitable_type()? == DeserializableType::Str {
+        if value.visitable_type(ctx)? == DeserializableType::Str {
             Deserializable::deserialize(ctx, value, name).map(SeverityOrGroup::Plain)
         } else {
             Deserializable::deserialize(ctx, value, name).map(SeverityOrGroup::<G>::Group)

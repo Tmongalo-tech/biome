@@ -76,7 +76,10 @@ declare_lint_rule! {
         version: "2.0.0",
         name: "noNoninteractiveElementInteractions",
         language: "jsx",
-        sources: &[RuleSource::EslintJsxA11y("no-noninteractive-element-interactions").same()],
+        sources: &[
+            RuleSource::EslintJsxA11y("no-noninteractive-element-interactions").same(),
+            RuleSource::EslintAstro("jsx-a11y/no-noninteractive-element-interactions").same(),
+        ],
         recommended: false,
     }
 }
@@ -127,6 +130,9 @@ impl Rule for NoNoninteractiveElementInteractions {
                     "Unexpected event handler on non-interactive element."
                 },
             )
+            .note(markup! {
+                "A non-interactive element has no interactive semantics, so assistive technologies do not present it as something the user can act on."
+            })
             .note(markup! {
                 "Non-interactive element should not have event handler. Consider replace semantically interactive element like "<Emphasis>"<button/>"</Emphasis>" or "<Emphasis>"<a href/>"</Emphasis>"."
             })

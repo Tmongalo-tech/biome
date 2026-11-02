@@ -1,4 +1,3 @@
-use crate::DestructureField;
 use crate::format_type_info::FormatTypeOptions;
 use crate::interned_types::{
     CallArgumentType, ConstructorParameter, FunctionParameter, FunctionParameterBinding,
@@ -8,7 +7,9 @@ use crate::interned_types::{
     NamedFunctionParameter, PatternFunctionParameter, ReturnType, TupleElementType, TypeData,
     TypeDb, TypeMember, TypeMemberKind, TypeofExpression,
 };
-use biome_formatter::prelude::*;
+use crate::interned_types::{InternedMappedType, MappedTypeKeys};
+use crate::{DestructureField, MappedTypeModifier};
+use biome_formatter::rowan::prelude::*;
 use biome_formatter::{FormatContext, TransformSourceMap, format_args, write};
 use biome_rowan::Text;
 use std::fmt::Display;
@@ -29,6 +30,7 @@ impl<'db> FormatInferredTypeContext<'db> {
 
 impl<'db> FormatContext for FormatInferredTypeContext<'db> {
     type Options = FormatTypeOptions;
+    type Source = RowanSource;
 
     fn options(&self) -> &Self::Options {
         &FormatTypeOptions
@@ -113,6 +115,10 @@ impl<'db> Format<FormatInferredTypeContext<'db>> for TypeData<'db> {
                     )
                 }
             }
+            Self::GlobalLocal(local) => {
+                let data = local.expand(db);
+                write!(f, [&data])
+            }
             Self::GlobalType(id) => {
                 if let Some(name) = crate::globals_ids::global_type_name(id.as_type_id()) {
                     write!(f, [text(name, None)])
@@ -162,6 +168,7 @@ impl<'db> Format<FormatInferredTypeContext<'db>> for TypeData<'db> {
                     token("]")
                 ]
             ),
+            Self::MappedType(mapped) => write!(f, [mapped]),
             Self::InstanceOf(instance) => {
                 write!(f, [&format_args![token("instanceof"), space(), instance]])
             }
@@ -219,6 +226,47 @@ impl<'db> Format<FormatInferredTypeContext<'db>> for InternedObject<'db> {
                     space(),
                     FmtInferredTypeMembers(self.members(db)),
                 ])),
+                token("}")
+            ]]
+        )
+    }
+}
+
+impl<'db> Format<FormatInferredTypeContext<'db>> for InternedMappedType<'db> {
+    fn fmt(&self, f: &mut Formatter<FormatInferredTypeContext<'db>>) -> FormatResult<()> {
+        let db = f.context().db();
+        let readonly = format_with(|f| match self.readonly_modifier(db) {
+            Some(MappedTypeModifier::Add) => write!(f, [token("readonly"), space()]),
+            Some(MappedTypeModifier::Remove) => write!(f, [token("-readonly"), space()]),
+            None => Ok(()),
+        });
+        let keys = format_with(|f| match self.keys(db) {
+            MappedTypeKeys::Keyof(ty) => write!(f, [token("keyof"), space(), ty]),
+            MappedTypeKeys::Type(ty) => write!(f, [ty]),
+        });
+        let optional = format_with(|f| match self.optional_modifier(db) {
+            Some(MappedTypeModifier::Add) => write!(f, [token("?")]),
+            Some(MappedTypeModifier::Remove) => write!(f, [token("-?")]),
+            None => Ok(()),
+        });
+        write!(
+            f,
+            [&format_args![
+                token("{"),
+                space(),
+                readonly,
+                token("["),
+                *self.type_parameter(db),
+                space(),
+                token("in"),
+                space(),
+                keys,
+                token("]"),
+                optional,
+                token(":"),
+                space(),
+                self.ty(db),
+                space(),
                 token("}")
             ]]
         )

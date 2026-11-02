@@ -47,7 +47,10 @@ declare_lint_rule! {
         version: "1.0.0",
         name: "noRedundantAlt",
         language: "jsx",
-        sources: &[RuleSource::EslintJsxA11y("img-redundant-alt").same()],
+        sources: &[
+            RuleSource::EslintJsxA11y("img-redundant-alt").same(),
+            RuleSource::EslintAstro("jsx-a11y/img-redundant-alt").same(),
+        ],
         recommended: true,
         severity: Severity::Error,
     }
@@ -131,6 +134,9 @@ impl Rule for NoRedundantAlt {
             )
             .note(markup! {
                 "Screen readers announce img elements as \"images\", so it is not necessary to redeclare this in alternative text."
+            })
+            .note(markup! {
+                "Remove the word if descriptive alt text remains. Otherwise, replace it with a description of what the image shows."
             }),
         )
     }

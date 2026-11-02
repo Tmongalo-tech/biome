@@ -18,7 +18,7 @@ use std::sync::Arc;
 use biome_rowan::Text;
 
 use crate::{
-    globals::{GLOBAL_NUMBER_ID, GLOBAL_STRING_ID, GLOBAL_UNKNOWN_ID},
+    globals::{GLOBAL_NUMBER_KEYWORD_ID, GLOBAL_STRING_KEYWORD_ID, GLOBAL_UNKNOWN_ID},
     globals_ids::{GlobalTypeId, global_type_name},
     literal::RegexpLiteral,
     type_data::literal::{BooleanLiteral, NumberLiteral, StringLiteral},
@@ -170,6 +170,10 @@ pub enum TypeData {
 
     /// A type such as `T[K]`, kept unevaluated until `T` and `K` can be resolved.
     IndexedAccess(Box<IndexedAccessType>),
+
+    /// A type such as `{ [K in keyof T]: T[K] }`, kept unevaluated until its
+    /// keys can be resolved.
+    MappedType(Box<MappedType>),
 
     /// Literal value used as a type.
     Literal(Box<Literal>),
@@ -415,7 +419,7 @@ impl TypeData {
 
     #[inline]
     pub fn number() -> Self {
-        Self::Reference(TypeReference::Resolved(GLOBAL_NUMBER_ID))
+        Self::Reference(TypeReference::Resolved(GLOBAL_NUMBER_KEYWORD_ID))
     }
 
     pub fn reference(reference: impl Into<TypeReference>) -> Self {
@@ -466,6 +470,7 @@ impl TypeData {
             | Self::InstanceOf(_)
             | Self::Interface(_)
             | Self::Intersection(_)
+            | Self::MappedType(_)
             | Self::Object(_)
             | Self::Tuple(_)
             | Self::Union(_) => instance.type_parameters.is_empty(),
@@ -485,7 +490,7 @@ impl TypeData {
 
     #[inline]
     pub fn string() -> Self {
-        Self::Reference(TypeReference::Resolved(GLOBAL_STRING_ID))
+        Self::Reference(TypeReference::Resolved(GLOBAL_STRING_KEYWORD_ID))
     }
 
     pub fn type_parameters(&self) -> Option<&[TypeReference]> {
@@ -1559,6 +1564,77 @@ pub struct IndexedAccessType {
     pub index: TypeReference,
 }
 
+/// Stores the parts of a TypeScript mapped type.
+///
+/// In this example, `type_parameter` refers to `K`, `keys` refers to the
+/// operand of `keyof T`, `ty` refers to `T[K]`, and the optional modifier
+/// records the `?`:
+///
+/// ```ts
+/// type Optional<T> = { [K in keyof T]?: T[K] };
+/// ```
+///
+/// Mapped types with an `as` clause are collected as unknown.
+#[derive(Clone, Debug, Eq, Hash, PartialEq)]
+pub struct MappedType {
+    /// The type parameter declared between the brackets.
+    pub type_parameter: TypeReference,
+
+    /// The keys the type parameter iterates over.
+    pub keys: MappedTypeKeys,
+
+    /// The type of every property. Unknown if the annotation is missing.
+    pub ty: TypeReference,
+
+    pub readonly_modifier: Option<MappedTypeModifier>,
+
+    pub optional_modifier: Option<MappedTypeModifier>,
+}
+
+/// The keys iterated by a [`MappedType`].
+///
+/// For `{ [K in keyof T]: ... }`, [`Self::Keyof`] stores `T`, not the keys of
+/// `T`. Evaluation computes the keys from the members of `T` and also needs
+/// those members for two other reasons:
+///
+/// - `T[K]` evaluates to the type of the member named by each key.
+/// - A property is optional when the member of `T` is optional.
+///
+/// In this example, `Copy` evaluates to `{ a: number; b?: string | undefined }`.
+/// The keys `"a" | "b"` alone wouldn't tell evaluation that `b` is optional or
+/// what type `Source[K]` has for each key:
+///
+/// ```ts
+/// type Source = { a: number; b?: string };
+/// type Copy = { [K in keyof Source]: Source[K] };
+/// ```
+#[derive(Clone, Debug, Eq, Hash, PartialEq)]
+pub enum MappedTypeKeys {
+    /// The keys of `T` in `{ [K in keyof T]: ... }`. Stores `T`.
+    Keyof(TypeReference),
+
+    /// Any other key type, as in `{ [K in "a" | "b"]: ... }`. Stores the key
+    /// type itself.
+    Type(TypeReference),
+}
+
+impl MappedTypeKeys {
+    /// Returns the stored type: the operand `T` for `keyof T`, or the key type
+    /// itself otherwise.
+    pub fn operand(&self) -> &TypeReference {
+        match self {
+            Self::Keyof(ty) | Self::Type(ty) => ty,
+        }
+    }
+}
+
+/// Whether a mapped type adds (`+?`, `?`) or removes (`-?`) a modifier.
+#[derive(Clone, Copy, Debug, Eq, Hash, PartialEq)]
+pub enum MappedTypeModifier {
+    Add,
+    Remove,
+}
+
 #[derive(Clone, Copy, Debug, Eq, Hash, PartialEq)]
 pub enum TypeOperator {
     Keyof,
@@ -1811,38 +1887,6 @@ impl TypeReferenceQualifier {
         self.path.is_identifier("Readonly")
     }
 
-    /// Checks whether this type qualifier references the `RegExp` type.
-    ///
-    /// This method simply checks whether the reference is for a literal
-    /// `RegExp`, without considering whether another symbol named `RegExp` is
-    /// in scope. It can be used _after_ type resolution has failed to find a
-    /// `RegExp` symbol in scope, but should not be used _instead of_ such type
-    /// resolution.
-    pub fn is_regex(&self) -> bool {
-        self.path.is_identifier("RegExp")
-    }
-
-    /// Checks whether this type qualifier references the `Symbol` type.
-    ///
-    /// This method simply checks whether the reference is for a literal
-    /// `Symbol`, without considering whether another symbol named `Symbol` is
-    /// in scope. It can be used _after_ type resolution has failed to find a
-    /// `Symbol` symbol in scope, but should not be used _instead of_ such type
-    /// resolution.
-    pub fn is_symbol(&self) -> bool {
-        self.path.is_identifier("Symbol")
-    }
-
-    /// Checks whether this type qualifier references the `Date` type.
-    pub fn is_date(&self) -> bool {
-        self.path.is_identifier("Date")
-    }
-
-    /// Checks whether this type qualifier references the `Math` namespace object.
-    pub fn is_math(&self) -> bool {
-        self.path.is_identifier("Math")
-    }
-
     /// Checks whether this type qualifier references the `Map` type.
     pub fn is_map(&self) -> bool {
         self.path.is_identifier("Map")
@@ -1856,33 +1900,6 @@ impl TypeReferenceQualifier {
     /// Checks whether this type qualifier references the `WeakMap` type.
     pub fn is_weak_map(&self) -> bool {
         self.path.is_identifier("WeakMap")
-    }
-
-    /// Checks whether this type qualifier references the `Error` type.
-    pub fn is_error(&self) -> bool {
-        self.path.is_identifier("Error")
-    }
-
-    /// Checks whether this type qualifier references the `Disposable` type.
-    ///
-    /// This method simply checks whether the reference is for a literal
-    /// `Disposable`, without considering whether another symbol named `Disposable` is
-    /// in scope. It can be used _after_ type resolution has failed to find a
-    /// `Disposable` symbol in scope, but should not be used _instead of_ such type
-    /// resolution.
-    pub fn is_disposable(&self) -> bool {
-        self.path.is_identifier("Disposable")
-    }
-
-    /// Checks whether this type qualifier references the `AsyncDisposable` type.
-    ///
-    /// This method simply checks whether the reference is for a literal
-    /// `AsyncDisposable`, without considering whether another symbol named `AsyncDisposable` is
-    /// in scope. It can be used _after_ type resolution has failed to find a
-    /// `AsyncDisposable` symbol in scope, but should not be used _instead of_ such type
-    /// resolution.
-    pub fn is_async_disposable(&self) -> bool {
-        self.path.is_identifier("AsyncDisposable")
     }
 
     pub fn with_excluded_binding_id(mut self, binding_id: BindingId) -> Self {
@@ -1939,19 +1956,19 @@ impl Union {
 #[cfg(test)]
 mod tests {
     use super::{RawTypeId, TypeId};
-    use crate::globals_ids::{STRING_ID_GLOBAL_TYPE_ID, UNKNOWN_ID_GLOBAL_TYPE_ID};
+    use crate::globals_ids::{STRING_KEYWORD_ID_GLOBAL_TYPE_ID, UNKNOWN_ID_GLOBAL_TYPE_ID};
 
     #[test]
     fn raw_type_id_identifies_unknown() {
         assert!(RawTypeId::Global(UNKNOWN_ID_GLOBAL_TYPE_ID).is_unknown());
-        assert!(!RawTypeId::Global(STRING_ID_GLOBAL_TYPE_ID).is_unknown());
+        assert!(!RawTypeId::Global(STRING_KEYWORD_ID_GLOBAL_TYPE_ID).is_unknown());
         assert!(!RawTypeId::Local(TypeId::new(0)).is_unknown());
     }
 
     #[test]
     fn raw_type_id_debug_is_readable() {
         assert_eq!(
-            format!("{:?}", RawTypeId::Global(STRING_ID_GLOBAL_TYPE_ID)),
+            format!("{:?}", RawTypeId::Global(STRING_KEYWORD_ID_GLOBAL_TYPE_ID)),
             "string"
         );
         assert_eq!(

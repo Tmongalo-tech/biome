@@ -9,7 +9,10 @@ use biome_rule_options::use_consistent_graphql_descriptions::{
 };
 
 declare_lint_rule! {
-    /// Require all descriptions to follow the same style (either block or inline) to  maintain consistency and improve readability across the schema.
+    /// Require one description style throughout a GraphQL schema.
+    ///
+    /// GraphQL supports triple-quoted block descriptions and one-line descriptions in double
+    /// quotes. Using one style consistently makes schema documentation easier to scan.
     ///
     /// ## Examples
     ///
@@ -39,11 +42,12 @@ declare_lint_rule! {
     ///
     /// ### `style`
     ///
-    /// This option will specify the description style.
-    /// - `"block"`: Requires triple-quoted block descriptions (`"""..."""`)
-    /// - `"inline"`: Requires single-quoted inline descriptions (`"..."`)
+    /// Selects the required description style:
     ///
-    /// Default `"block"`
+    /// - `"block"` requires triple-quoted descriptions (`"""..."""`);
+    /// - `"inline"` requires one-line descriptions in double quotes (`"..."`).
+    ///
+    /// Defaults to `"block"`.
     ///
     /// ```json,options
     /// {
@@ -107,7 +111,10 @@ impl Rule for UseConsistentGraphqlDescriptions {
                 },
             )
             .note(markup! {
-                    "To stay consistent within the project, write the description "{style}" style."
+                "Using different description styles in the same project makes a schema harder to read and maintain."
+            })
+            .note(markup! {
+                "To stay consistent within the project, write the description "{style}" style."
             }),
         )
     }

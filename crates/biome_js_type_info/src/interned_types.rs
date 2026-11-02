@@ -17,12 +17,13 @@ use std::iter::FusedIterator;
 use crate::{
     ScopeId,
     builders::{IntersectionBuilder, UnionBuilder},
-    globals_ids::{
+    generated::global_types::ids::{
         ARRAY_ID_GLOBAL_TYPE_ID, ASYNC_DISPOSABLE_ID_GLOBAL_TYPE_ID, DATE_ID_GLOBAL_TYPE_ID,
-        DISPOSABLE_ID_GLOBAL_TYPE_ID, ERROR_ID_GLOBAL_TYPE_ID, GlobalTypeId, MAP_ID_GLOBAL_TYPE_ID,
-        PROMISE_ID_GLOBAL_TYPE_ID, REGEXP_ID_GLOBAL_TYPE_ID, SET_ID_GLOBAL_TYPE_ID,
+        DISPOSABLE_ID_GLOBAL_TYPE_ID, ERROR_ID_GLOBAL_TYPE_ID, MAP_ID_GLOBAL_TYPE_ID,
+        PROMISE_ID_GLOBAL_TYPE_ID, REG_EXP_ID_GLOBAL_TYPE_ID, SET_ID_GLOBAL_TYPE_ID,
         SYMBOL_ID_GLOBAL_TYPE_ID, WEAK_MAP_ID_GLOBAL_TYPE_ID,
     },
+    globals_ids::GlobalTypeId,
     literal::{BooleanLiteral, NumberLiteral, RegexpLiteral, StringLiteral},
     type_data as raw,
 };
@@ -35,6 +36,31 @@ pub type ReferenceResolver<'db, 'resolver> =
 const MAX_GENERIC_REPLACEMENT_STEPS: usize = 64;
 const MAX_OBJECT_RELATION_DEPTH: usize = 50;
 
+/// Expands `local` and any supporting-type handle that it resolves to.
+///
+/// Supporting types are ordered so that each only refers to earlier entries,
+/// so repeated expansion terminates.
+#[inline(never)]
+/// Returns whether `ty` is [`TypeData::Unknown`] or an instance of it.
+fn is_unknown_operand<'db>(db: &'db dyn TypeDb, ty: TypeData<'db>) -> bool {
+    match ty {
+        TypeData::Unknown => true,
+        TypeData::InstanceOf(instance) => instance.ty(db) == TypeData::Unknown,
+        _ => false,
+    }
+}
+
+fn expand_global_local_handle<'db>(
+    db: &'db dyn TypeDb,
+    local: crate::GlobalTypeInput<'db>,
+) -> TypeData<'db> {
+    let mut ty = local.expand(db);
+    while let TypeData::GlobalLocal(local) = ty {
+        ty = local.expand(db);
+    }
+    ty
+}
+
 pub fn well_known_symbol_name(ty: TypeData) -> Option<Text> {
     let TypeData::GlobalType(id) = ty else {
         return None;
@@ -44,11 +70,7 @@ pub fn well_known_symbol_name(ty: TypeData) -> Option<Text> {
 }
 
 pub fn well_known_symbol_type<'db>(member_name: &str) -> Option<TypeData<'db>> {
-    crate::globals_ids::PREDEFINED_ID_ROWS
-        .iter()
-        .position(|name| name.strip_prefix("Symbol.") == Some(member_name))
-        .and_then(|index| GlobalTypeId::try_from_type_id(raw::TypeId::new(index)))
-        .map(TypeData::GlobalType)
+    crate::global_type_id_for_value(&format!("Symbol.{member_name}")).map(TypeData::GlobalType)
 }
 
 #[derive(Clone, Copy, Debug, Eq, Hash, Ord, PartialEq, PartialOrd, salsa::SalsaValue)]
@@ -115,10 +137,16 @@ pub enum TypeData<'db> {
     Generic(InternedGenericTypeParameter<'db>),
     Local(LocalTypeHandle<'db>),
     GlobalType(GlobalTypeId),
+    /// An entry in a global's supporting-type table, resolved on demand.
+    ///
+    /// Unlike [`Self::GlobalType`], the handle carries no nominal identity:
+    /// expansion always replaces it with its data.
+    GlobalLocal(crate::GlobalTypeInput<'db>),
     Intersection(InternedIntersection<'db>),
     Union(InternedUnion<'db>),
     TypeOperator(InternedTypeOperatorType<'db>),
     IndexedAccess(InternedIndexedAccessType<'db>),
+    MappedType(InternedMappedType<'db>),
     Literal(InternedLiteral<'db>),
     InstanceOf(InternedTypeInstance<'db>),
     MergedReference(InternedMergedReference<'db>),
@@ -248,6 +276,7 @@ impl<'db> TypeData<'db> {
                 | Self::Local(_)
                 | Self::TypeofExpression(_)
                 | Self::IndexedAccess(_)
+                | Self::MappedType(_)
                 | Self::AnyKeyword
                 | Self::UnknownKeyword
         )
@@ -311,6 +340,10 @@ impl<'db> TypeData<'db> {
                     self = instance.ty(db);
                     continue;
                 }
+                Self::GlobalLocal(local) => {
+                    self = local.expand(db);
+                    continue;
+                }
                 Self::Intersection(_) => "intersection",
                 Self::Union(_) => "union",
                 Self::Literal(literal) => match literal.literal(db) {
@@ -326,6 +359,7 @@ impl<'db> TypeData<'db> {
                 Self::MergedReference(_) => "merged type",
                 Self::TypeOperator(_) => "type operator",
                 Self::IndexedAccess(_) => "indexed access",
+                Self::MappedType(_) => "mapped type",
                 Self::TypeofExpression(_) | Self::TypeofType(_) | Self::TypeofValue(_) => "typeof",
                 Self::Conditional => "conditional",
                 Self::Global | Self::GlobalType(_) => "global",
@@ -582,9 +616,11 @@ impl<'db> TypeData<'db> {
             Self::Null | Self::Undefined | Self::VoidKeyword => Some(ConditionalType::Nullish),
             Self::Generic(_)
             | Self::GlobalType(_)
+            | Self::GlobalLocal(_)
             | Self::Local(_)
             | Self::TypeOperator(_)
             | Self::IndexedAccess(_)
+            | Self::MappedType(_)
             | Self::TypeofType(_)
             | Self::TypeofValue(_)
             | Self::InstanceOf(_)
@@ -621,12 +657,14 @@ impl<'db> TypeData<'db> {
             | Self::InstanceOf(_)
             | Self::Interface(_)
             | Self::Intersection(_)
+            | Self::MappedType(_)
             | Self::Object(_)
             | Self::Tuple(_)
             | Self::Union(_) => type_parameters.is_empty(),
             Self::Class(_)
             | Self::Generic(_)
             | Self::GlobalType(_)
+            | Self::GlobalLocal(_)
             | Self::Local(_)
             | Self::MergedReference(_)
             | Self::TypeOperator(_)
@@ -831,11 +869,23 @@ impl<'db> TypeData<'db> {
     /// definition so that it can find the static `resolve` member. Only that
     /// lookup uses the expanded definition; the canonical handle remains
     /// unchanged elsewhere.
+    #[inline]
     pub fn expand_canonical_global(self, db: &'db dyn TypeDb) -> Self {
-        if let Self::GlobalType(id) = self {
-            crate::global_types(db).get(id)
-        } else {
-            self
+        match self {
+            Self::GlobalType(id) => crate::global_types(db).get(id),
+            Self::GlobalLocal(_) => self.expand_global_local(db).expand_canonical_global(db),
+            _ => self,
+        }
+    }
+
+    /// Replaces a handle to a global's supporting type with its data.
+    ///
+    /// Other types are returned unchanged.
+    #[inline]
+    pub fn expand_global_local(self, db: &'db dyn TypeDb) -> Self {
+        match self {
+            Self::GlobalLocal(local) => expand_global_local_handle(db, local),
+            _ => self,
         }
     }
 
@@ -859,10 +909,18 @@ impl<'db> TypeData<'db> {
     /// ID. `kind` is represented by an internal global helper whose definition
     /// carries no identity that structural operations preserve, so the helper
     /// expands to the union of string literals that `typeof` can return.
+    #[inline]
     pub fn expand_structural_global(self, db: &'db dyn TypeDb) -> Self {
-        let Self::GlobalType(id) = self else {
-            return self;
-        };
+        match self {
+            Self::GlobalType(id) => self.expand_structural_global_handle(db, id),
+            Self::GlobalLocal(_) => self.expand_global_local(db).expand_structural_global(db),
+            _ => self,
+        }
+    }
+
+    /// Expands the canonical global handle `self`, whose ID is `id`, as
+    /// described by [`Self::expand_structural_global`].
+    fn expand_structural_global_handle(self, db: &'db dyn TypeDb, id: GlobalTypeId) -> Self {
         match crate::global_types(db).get(id) {
             Self::Class(_)
             | Self::Interface(_)
@@ -872,6 +930,7 @@ impl<'db> TypeData<'db> {
             expanded @ (Self::Unknown
             | Self::Global
             | Self::GlobalType(_)
+            | Self::GlobalLocal(_)
             | Self::BigInt
             | Self::Boolean
             | Self::Null
@@ -889,6 +948,7 @@ impl<'db> TypeData<'db> {
             | Self::Union(_)
             | Self::TypeOperator(_)
             | Self::IndexedAccess(_)
+            | Self::MappedType(_)
             | Self::Literal(_)
             | Self::InstanceOf(_)
             | Self::MergedReference(_)
@@ -933,7 +993,7 @@ impl<'db> TypeData<'db> {
     }
 
     pub const fn regexp_class() -> Self {
-        Self::GlobalType(REGEXP_ID_GLOBAL_TYPE_ID)
+        Self::GlobalType(REG_EXP_ID_GLOBAL_TYPE_ID)
     }
 
     pub const fn set_class() -> Self {
@@ -986,6 +1046,18 @@ impl<'db> TypeData<'db> {
         is_builtin: bool,
         resolve_reference: &mut ReferenceResolver<'db, '_>,
     ) -> Self {
+        Self::from_raw_with_member_resolver(db, raw, is_builtin, resolve_reference, None)
+    }
+
+    /// Converts `raw` like [`Self::from_raw_with_resolver`], but resolves the
+    /// types of `raw`'s own members with `resolve_member` when one is given.
+    pub fn from_raw_with_member_resolver(
+        db: &'db dyn TypeDb,
+        raw: &RawTypeData,
+        is_builtin: bool,
+        resolve_reference: &mut ReferenceResolver<'db, '_>,
+        resolve_member: Option<&mut ReferenceResolver<'db, '_>>,
+    ) -> Self {
         match raw {
             raw::TypeData::Unknown => Self::Unknown,
             raw::TypeData::Global => Self::Global,
@@ -1003,7 +1075,7 @@ impl<'db> TypeData<'db> {
                 convert_references(db, &class.type_parameters, resolve_reference),
                 class.extends.as_ref().map(&mut *resolve_reference),
                 convert_references(db, &class.implements, resolve_reference),
-                convert_type_members(db, &class.members, resolve_reference),
+                convert_type_members(db, &class.members, resolve_reference, resolve_member),
                 class.name.clone(),
                 is_builtin,
             )),
@@ -1028,23 +1100,23 @@ impl<'db> TypeData<'db> {
                 db,
                 convert_references(db, &interface.type_parameters, resolve_reference),
                 convert_references(db, &interface.extends, resolve_reference),
-                convert_type_members(db, &interface.members, resolve_reference),
+                convert_type_members(db, &interface.members, resolve_reference, resolve_member),
                 interface.name.clone(),
             )),
             raw::TypeData::Module(module) => Self::Module(InternedModule::new(
                 db,
-                convert_type_members(db, &module.members, resolve_reference),
+                convert_type_members(db, &module.members, resolve_reference, resolve_member),
                 module.name.clone(),
             )),
             raw::TypeData::Namespace(namespace) => Self::Namespace(InternedNamespace::new(
                 db,
-                convert_type_members(db, &namespace.members, resolve_reference),
+                convert_type_members(db, &namespace.members, resolve_reference, resolve_member),
                 namespace.path.clone(),
             )),
             raw::TypeData::Object(object) => Self::Object(InternedObject::new(
                 db,
                 object.prototype.as_ref().map(&mut *resolve_reference),
-                convert_type_members(db, &object.members, resolve_reference),
+                convert_type_members(db, &object.members, resolve_reference, resolve_member),
                 object.has_unknown_members,
             )),
             raw::TypeData::Tuple(tuple) => Self::Tuple(InternedTuple::new(
@@ -1096,6 +1168,17 @@ impl<'db> TypeData<'db> {
                     resolve_reference(&access.index),
                 ))
             }
+            raw::TypeData::MappedType(mapped) => Self::MappedType(InternedMappedType::new(
+                db,
+                resolve_reference(&mapped.type_parameter),
+                match &mapped.keys {
+                    raw::MappedTypeKeys::Keyof(ty) => MappedTypeKeys::Keyof(resolve_reference(ty)),
+                    raw::MappedTypeKeys::Type(ty) => MappedTypeKeys::Type(resolve_reference(ty)),
+                },
+                resolve_reference(&mapped.ty),
+                mapped.readonly_modifier,
+                mapped.optional_modifier,
+            )),
             raw::TypeData::Literal(literal) => Self::Literal(InternedLiteral::new(
                 db,
                 convert_literal(db, literal.as_ref(), resolve_reference),
@@ -1159,7 +1242,7 @@ pub(crate) struct TypeDataSlots<'db> {
 /// replacements extracted from one parent from being validated against another.
 pub(crate) struct TypeDataSlotRebuilder<'db> {
     parent: TypeData<'db>,
-    slot_count: usize,
+    slots: Vec<TypeData<'db>>,
 }
 
 impl<'db> TypeDataSlots<'db> {
@@ -1227,6 +1310,13 @@ impl<'db> TypeDataSlots<'db> {
             TypeData::IndexedAccess(access) => {
                 result.slots.extend([access.object(db), access.index(db)])
             }
+            // The type parameter comes first so root-body substitution can
+            // skip the declared parameter like it does for other binders.
+            TypeData::MappedType(mapped) => result.slots.extend([
+                *mapped.type_parameter(db),
+                mapped.keys(db).operand(),
+                mapped.ty(db),
+            ]),
             TypeData::Literal(literal) => {
                 if let Literal::Object(members) = literal.literal(db) {
                     result.push_type_members_slots(members);
@@ -1261,12 +1351,11 @@ impl<'db> TypeDataSlots<'db> {
         self.slots.iter().copied()
     }
 
-    pub(crate) fn into_parts(self) -> (TypeDataSlotRebuilder<'db>, Vec<TypeData<'db>>) {
-        let rebuilder = TypeDataSlotRebuilder {
+    pub(crate) fn into_rebuilder(self) -> TypeDataSlotRebuilder<'db> {
+        TypeDataSlotRebuilder {
             parent: self.parent,
-            slot_count: self.slots.len(),
-        };
-        (rebuilder, self.slots)
+            slots: self.slots,
+        }
     }
 
     /// Pattern bindings precede the parameter type during reconstruction.
@@ -1395,8 +1484,7 @@ impl<'db> TypeDataSlots<'db> {
         db: &'db dyn TypeDb,
         replacements: Vec<TypeData<'db>>,
     ) -> TypeTransformResult<TypeData<'db>> {
-        let (rebuilder, _) = self.into_parts();
-        rebuilder.rebuild(db, replacements)
+        self.into_rebuilder().rebuild(db, replacements)
     }
 }
 
@@ -1411,7 +1499,51 @@ impl<'db> IntoIterator for TypeDataSlots<'db> {
 
 impl<'db> TypeDataSlotRebuilder<'db> {
     pub(crate) fn len(&self) -> usize {
-        self.slot_count
+        self.slots.len()
+    }
+
+    /// Returns the slots extracted from the parent, in rebuild order.
+    pub(crate) fn slots(&self) -> &[TypeData<'db>] {
+        &self.slots
+    }
+
+    /// Rebuilds the parent like [`Self::rebuild`], but returns it unchanged
+    /// when every replacement equals its original slot and rebuilding would
+    /// not normalize it.
+    pub(crate) fn rebuild_if_changed(
+        self,
+        db: &'db dyn TypeDb,
+        replacements: Vec<TypeData<'db>>,
+    ) -> TypeTransformResult<TypeData<'db>> {
+        if replacements == self.slots && !self.rebuild_normalizes(db) {
+            return TypeTransformResult::Transformed(self.parent);
+        }
+        self.rebuild(db, replacements)
+    }
+
+    /// Returns whether rebuilding the parent from its own slots can produce a
+    /// different type.
+    ///
+    /// Rebuilding flattens and deduplicates unions and intersections,
+    /// collapses an instance without type arguments whose target is an
+    /// instance or a union, and collapses an indexed access with an unknown
+    /// operand.
+    fn rebuild_normalizes(&self, db: &'db dyn TypeDb) -> bool {
+        match self.parent {
+            TypeData::Union(_) | TypeData::Intersection(_) => true,
+            TypeData::IndexedAccess(access) => {
+                is_unknown_operand(db, access.object(db))
+                    || is_unknown_operand(db, access.index(db))
+            }
+            TypeData::InstanceOf(instance) => {
+                instance.type_parameters(db).is_empty()
+                    && matches!(
+                        instance.ty(db),
+                        TypeData::InstanceOf(_) | TypeData::Union(_)
+                    )
+            }
+            _ => false,
+        }
     }
 
     pub(crate) fn rebuild(
@@ -1419,7 +1551,7 @@ impl<'db> TypeDataSlotRebuilder<'db> {
         db: &'db dyn TypeDb,
         replacements: Vec<TypeData<'db>>,
     ) -> TypeTransformResult<TypeData<'db>> {
-        TypeDataSlotReplacements::new(replacements, self.slot_count)
+        TypeDataSlotReplacements::new(replacements, self.slots.len())
             .and_then(|replacements| replacements.rebuild(db, self.parent))
             .map_or(
                 TypeTransformResult::InvalidRebuild,
@@ -1532,10 +1664,27 @@ impl<'db> TypeDataSlotReplacements<'db> {
             TypeData::TypeOperator(operator) => TypeData::TypeOperator(
                 InternedTypeOperatorType::new(db, self.take_type()?, operator.operator(db)),
             ),
-            TypeData::IndexedAccess(_) => TypeData::IndexedAccess(InternedIndexedAccessType::new(
+            TypeData::IndexedAccess(_) => {
+                let object = self.take_type()?;
+                let index = self.take_type()?;
+                // Retaining an unknown operand lets recursive aliases build
+                // Unknown[K][K]... instead of reaching a repeated lookup state.
+                if is_unknown_operand(db, object) || is_unknown_operand(db, index) {
+                    TypeData::Unknown
+                } else {
+                    TypeData::IndexedAccess(InternedIndexedAccessType::new(db, object, index))
+                }
+            }
+            TypeData::MappedType(mapped) => TypeData::MappedType(InternedMappedType::new(
                 db,
                 self.take_type()?,
+                match mapped.keys(db) {
+                    MappedTypeKeys::Keyof(_) => MappedTypeKeys::Keyof(self.take_type()?),
+                    MappedTypeKeys::Type(_) => MappedTypeKeys::Type(self.take_type()?),
+                },
                 self.take_type()?,
+                mapped.readonly_modifier(db),
+                mapped.optional_modifier(db),
             )),
             TypeData::Literal(literal) => TypeData::Literal(InternedLiteral::new(
                 db,
@@ -1972,11 +2121,65 @@ pub struct TypeMember<'db> {
     pub ty: TypeData<'db>,
 }
 
+/// Returns whether a member name or string literal needs escape handling before
+/// it can be compared or used as a key.
+///
+/// Names and string literals keep their source spelling. The key `"\u0041"` is
+/// stored as written rather than as `A`, so it would compare unequal to the
+/// property `A` that it names. Quotes and line breaks also need escaping before
+/// a consumer can insert the name into a double-quoted literal.
+pub(crate) fn requires_escape_handling(text: &str) -> bool {
+    text.contains(['\\', '"', '\n', '\r'])
+}
+
 const CUSTOM_STRINGIFICATION_MEMBER_NAMES: [&str; 3] = ["toLocaleString", "toString", "valueOf"];
+
+/// The key a member contributes to `keyof`, and to a mapped type over `keyof T`.
+#[derive(Clone, Copy, Debug)]
+pub(crate) enum ProjectedKey<'a> {
+    /// The key is the string literal type of this name.
+    Name(&'a Text),
+    /// The member has no key, as with a call signature.
+    NoKey,
+    /// The member has a key that can't be written as a string literal type,
+    /// such as a computed key, an index signature, or a numeric name.
+    Unsupported,
+}
 
 impl TypeMember<'_> {
     pub(crate) fn name(&self) -> Option<Text> {
         self.kind.name()
+    }
+
+    /// Returns the key this member contributes to `keyof`, and to a mapped
+    /// type over `keyof T`.
+    ///
+    /// Numeric names are unsupported because member names don't record
+    /// whether a numeric key was quoted. The two spellings have different
+    /// `keyof` types: `keyof { 1: x }` is `1`, while `keyof { "1": x }` is
+    /// `"1"`. Names that need escape handling are unsupported too; see
+    /// [`requires_escape_handling`].
+    pub(crate) fn projected_key(&self) -> ProjectedKey<'_> {
+        let name = match &self.kind {
+            TypeMemberKind::Named(name)
+            | TypeMemberKind::NamedOptional(name)
+            | TypeMemberKind::Getter(name)
+            | TypeMemberKind::ConstAssertedNamed(name)
+            | TypeMemberKind::ConstAssertedNamedOptional(name)
+            | TypeMemberKind::ConstAssertedGetter(name) => name,
+            TypeMemberKind::CallSignature | TypeMemberKind::ConstAssertedCallSignature => {
+                return ProjectedKey::NoKey;
+            }
+            _ => return ProjectedKey::Unsupported,
+        };
+        if requires_escape_handling(name.text())
+            || name
+                .text()
+                .starts_with(|c: char| c.is_ascii_digit() || matches!(c, '.' | '-' | '+'))
+        {
+            return ProjectedKey::Unsupported;
+        }
+        ProjectedKey::Name(name)
     }
 
     /// Returns whether this member declares one of JavaScript's object
@@ -2519,6 +2722,92 @@ pub struct InternedIndexedAccessType<'db> {
     pub index: TypeData<'db>,
 }
 
+impl<'db> InternedIndexedAccessType<'db> {
+    /// Evaluates `T[keyof T]` to the types of `T`'s properties.
+    ///
+    /// Returns `None` for other indexed accesses, and when `T` has members other
+    /// than required properties, because those would contribute types that this
+    /// evaluation does not model.
+    ///
+    /// ```ts
+    /// interface WeakKeyTypes { object: object; symbol: symbol }
+    /// type WeakKey = WeakKeyTypes[keyof WeakKeyTypes]; // object | symbol
+    /// ```
+    pub fn keyof_property_types(self, db: &'db dyn TypeDb) -> Option<Box<[TypeData<'db>]>> {
+        let object = self.object(db);
+        let TypeData::TypeOperator(operator) = self.index(db) else {
+            return None;
+        };
+        if operator.operator(db) != raw::TypeOperator::Keyof || operator.ty(db) != object {
+            return None;
+        }
+        let target = match object {
+            TypeData::InstanceOf(instance) if instance.type_parameters(db).is_empty() => {
+                instance.ty(db)
+            }
+            object => object,
+        };
+        let members = match target.expand_canonical_global(db) {
+            TypeData::Interface(interface) if interface.extends(db).is_empty() => {
+                interface.members(db).as_ref()
+            }
+            TypeData::Object(object) => object.members(db).as_ref(),
+            _ => return None,
+        };
+        members
+            .iter()
+            .map(|member| matches!(member.kind, TypeMemberKind::Named(_)).then_some(member.ty))
+            .collect()
+    }
+}
+
+/// The parts of a TypeScript mapped type, stored in the database. See
+/// [`raw::MappedType`] for an example of the parts.
+#[salsa::interned]
+#[derive(Debug)]
+pub struct InternedMappedType<'db> {
+    #[returns(ref)]
+    pub type_parameter: TypeData<'db>,
+    #[returns(copy)]
+    pub keys: MappedTypeKeys<'db>,
+    #[returns(copy)]
+    pub ty: TypeData<'db>,
+    #[returns(copy)]
+    pub readonly_modifier: Option<raw::MappedTypeModifier>,
+    #[returns(copy)]
+    pub optional_modifier: Option<raw::MappedTypeModifier>,
+}
+
+/// The keys iterated by a mapped type. See [`raw::MappedTypeKeys`] for why
+/// `Keyof` stores the operand of `keyof` rather than the keys.
+#[derive(Clone, Copy, Debug, Eq, Hash, PartialEq, salsa::SalsaValue)]
+pub enum MappedTypeKeys<'db> {
+    Keyof(TypeData<'db>),
+    Type(TypeData<'db>),
+}
+
+impl<'db> MappedTypeKeys<'db> {
+    /// Returns the stored type: the operand `T` for `keyof T`, or the key type
+    /// itself otherwise.
+    pub fn operand(self) -> TypeData<'db> {
+        match self {
+            Self::Keyof(ty) | Self::Type(ty) => ty,
+        }
+    }
+
+    /// Returns whether these keys cannot be enumerated whatever substitutions
+    /// are applied first.
+    ///
+    /// Indexing with a literal, as in `[K in T[0]]` or `[K in keyof T["key"]]`,
+    /// normalizes to unknown, so the mapped type cannot be evaluated.
+    pub fn are_never_enumerable(self, db: &'db dyn TypeDb) -> bool {
+        matches!(
+            self.operand(),
+            TypeData::IndexedAccess(access) if access.index(db).is_never_supported_index()
+        )
+    }
+}
+
 #[salsa::interned]
 #[derive(Debug)]
 pub struct InternedTypeofExpression<'db> {
@@ -2555,12 +2844,16 @@ fn convert_type_members<'db>(
     db: &'db dyn TypeDb,
     members: &[raw::TypeMember],
     resolve_reference: &mut ReferenceResolver<'db, '_>,
+    mut resolve_member: Option<&mut ReferenceResolver<'db, '_>>,
 ) -> Box<[TypeMember<'db>]> {
     members
         .iter()
         .map(|member| TypeMember {
             kind: convert_type_member_kind(db, &member.kind, resolve_reference),
-            ty: resolve_reference(&member.ty),
+            ty: match resolve_member.as_deref_mut() {
+                Some(resolve_member) => resolve_member(&member.ty),
+                None => resolve_reference(&member.ty),
+            },
         })
         .collect()
 }
@@ -2719,6 +3012,7 @@ fn convert_literal<'db>(
             db,
             object.members(),
             resolve_reference,
+            None,
         )),
         raw::Literal::RegExp(regexp) => Literal::RegExp(regexp.clone()),
         raw::Literal::String(string) => Literal::String(string.clone()),
@@ -2898,10 +3192,7 @@ mod tests {
 
     #[salsa::db]
     impl biome_db::Db for TestDb {
-        fn parsed_source_for_path(
-            &self,
-            _path: &camino::Utf8Path,
-        ) -> Option<biome_db::ParsedSource> {
+        fn parsed_source_for_path(&self, _path: &camino::Utf8Path) -> Option<biome_db::Source> {
             None
         }
     }
@@ -3051,13 +3342,10 @@ mod tests {
             raw::TypeOperator::Keyof,
         ));
         let mut transformer = TypeDataTransformer::new(1);
-        let mut substituter = TypeSubstituter::new(
-            &db,
-            TypeSubstitution {
-                generic: TypeData::Number,
-                replacement: TypeData::Boolean,
-            },
-        );
+        let mut substituter = TypeSubstituter::new(&[TypeSubstitution {
+            generic: TypeData::Number,
+            replacement: TypeData::Boolean,
+        }]);
 
         assert_eq!(
             substituter.substitute(&mut transformer, &db, ty),

@@ -2148,6 +2148,24 @@ export interface JsVariableStatement extends JsAstNode {
 	token(field: "semicolonToken"): JsAstToken | undefined;
 	token(field: string): JsAstToken | undefined;
 }
+export interface JsVueGenericRoot extends JsAstNode {
+	readonly kind: "JS_VUE_GENERIC_ROOT";
+	readonly items: AnyJsVueGenericTypeParameters | undefined;
+	withItems(value: AnyJsVueGenericTypeParameters): JsVueGenericRoot;
+	readonly eofToken: string | undefined;
+	withEofToken(value: JsAstToken): JsVueGenericRoot;
+	token(field: "eofToken"): JsAstToken | undefined;
+	token(field: string): JsAstToken | undefined;
+}
+export interface JsVueSlotPropsRoot extends JsAstNode {
+	readonly kind: "JS_VUE_SLOT_PROPS_ROOT";
+	readonly parameters: JsParameterList;
+	withParameters(value: JsParameterListNode): JsVueSlotPropsRoot;
+	readonly eofToken: string | undefined;
+	withEofToken(value: JsAstToken): JsVueSlotPropsRoot;
+	token(field: "eofToken"): JsAstToken | undefined;
+	token(field: string): JsAstToken | undefined;
+}
 export interface JsWhileStatement extends JsAstNode {
 	readonly kind: "JS_WHILE_STATEMENT";
 	readonly whileToken: string | undefined;
@@ -2369,8 +2387,8 @@ export interface JsxShorthandAttribute extends JsAstNode {
 	readonly kind: "JSX_SHORTHAND_ATTRIBUTE";
 	readonly lCurlyToken: string | undefined;
 	withLCurlyToken(value: JsAstToken): JsxShorthandAttribute;
-	readonly name: JsReferenceIdentifier | undefined;
-	withName(value: JsReferenceIdentifier): JsxShorthandAttribute;
+	readonly expression: AnyJsExpression | undefined;
+	withExpression(value: AnyJsExpression): JsxShorthandAttribute;
 	readonly rCurlyToken: string | undefined;
 	withRCurlyToken(value: JsAstToken): JsxShorthandAttribute;
 	token(field: "lCurlyToken" | "rCurlyToken"): JsAstToken | undefined;
@@ -4177,6 +4195,8 @@ export type AnyJsRoot =
 	| JsScript
 	| JsSvelteDeclarationRoot
 	| JsSvelteSnippetRoot
+	| JsVueGenericRoot
+	| JsVueSlotPropsRoot
 	| TsDeclarationModule;
 export type AnyJsStatement =
 	| JsBlockStatement
@@ -4217,6 +4237,7 @@ export type AnyJsSvelteDeclaration =
 	| JsVariableDeclaration;
 export type AnyJsSwitchClause = JsCaseClause | JsDefaultClause;
 export type AnyJsTemplateElement = JsTemplateChunkElement | JsTemplateElement;
+export type AnyJsVueGenericTypeParameters = JsBogus | TsTypeParameterList;
 export type AnyJsxAttribute =
 	| JsMetavariable
 	| JsxAttribute
@@ -4510,6 +4531,8 @@ export interface JsNodeByKind {
 	readonly JS_VARIABLE_DECLARATION_CLAUSE: JsVariableDeclarationClause;
 	readonly JS_VARIABLE_DECLARATOR: JsVariableDeclarator;
 	readonly JS_VARIABLE_STATEMENT: JsVariableStatement;
+	readonly JS_VUE_GENERIC_ROOT: JsVueGenericRoot;
+	readonly JS_VUE_SLOT_PROPS_ROOT: JsVueSlotPropsRoot;
 	readonly JS_WHILE_STATEMENT: JsWhileStatement;
 	readonly JS_WITH_STATEMENT: JsWithStatement;
 	readonly JS_YIELD_ARGUMENT: JsYieldArgument;

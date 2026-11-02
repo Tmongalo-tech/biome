@@ -1,11 +1,11 @@
 use super::*;
 use biome_js_syntax::{
     AnyJsDeclaration, AnyJsIdentifierReference, AnyJsRoot, JsExport, JsIdentifierAssignment,
-    JsSyntaxNode, TextRange, TsConditionalType, TsDeclareStatement, TsTypeParameterName,
-    unescape_js_identifier,
+    JsLanguage, JsSyntaxNode, TextRange, TsConditionalType, TsDeclareStatement,
+    TsTypeParameterName, unescape_js_identifier,
 };
 use biome_jsdoc_comment::JsdocComment;
-use biome_rowan::SyntaxNodePtr;
+use biome_rowan::{SyntaxKindSet, SyntaxNodePtr};
 use rustc_hash::{FxHashMap, FxHashSet};
 use std::collections::hash_map::Entry;
 
@@ -23,7 +23,6 @@ pub struct SemanticModelBuilder {
     globals: Vec<SemanticModelGlobalBindingData>,
     globals_by_name: FxHashMap<String, Option<u32>>,
     scopes: Vec<SemanticModelScopeData>,
-    scope_range_by_start: FxHashMap<TextSize, BTreeSet<Interval<u32, ScopeId>>>,
     scope_hoisted_to_by_range: FxHashMap<TextSize, ScopeId>,
     bindings: Vec<SemanticModelBindingData>,
     /// maps a binding range start to its index inside [SemanticModelBuilder::bindings] vec
@@ -47,7 +46,6 @@ impl SemanticModelBuilder {
             globals: vec![],
             globals_by_name: FxHashMap::default(),
             scopes: vec![],
-            scope_range_by_start: FxHashMap::default(),
             scope_hoisted_to_by_range: FxHashMap::default(),
             bindings: vec![],
             bindings_by_start: FxHashMap::default(),
@@ -66,9 +64,16 @@ impl SemanticModelBuilder {
         self.flavor = flavor;
     }
 
+    /// The kinds of the nodes that [Self::push_node] reads: the ones that
+    /// [SemanticEventExtractor] reads, and [JsExport].
+    pub const VISITED_KINDS: SyntaxKindSet<JsLanguage> =
+        SemanticEventExtractor::VISITED_KINDS.union(JsExport::KIND_SET);
+
     #[inline]
     pub fn push_node(&mut self, node: &JsSyntaxNode) {
         use JsSyntaxKind::*;
+        // If you read a node kind that `SemanticEventExtractor::VISITED_KINDS`
+        // doesn't contain, add it to [Self::VISITED_KINDS].
         match node.kind() {
             // Accessible from bindings and references
             JS_IDENTIFIER_BINDING
@@ -88,6 +93,8 @@ impl SemanticModelBuilder {
             | JS_EXPRESSION_TEMPLATE_ROOT
             | JS_SVELTE_DECLARATION_ROOT
             | JS_SVELTE_SNIPPET_ROOT
+            | JS_VUE_SLOT_PROPS_ROOT
+            | JS_VUE_GENERIC_ROOT
             | TS_DECLARATION_MODULE
             | JS_FUNCTION_DECLARATION
             | JS_FUNCTION_EXPRESSION
@@ -188,16 +195,6 @@ impl SemanticModelBuilder {
                 if let Some(parent_scope_id) = parent_scope_id {
                     self.scopes[parent_scope_id.index()].children.push(scope_id);
                 }
-
-                let start = range.start();
-                self.scope_range_by_start
-                    .entry(start)
-                    .or_default()
-                    .insert(Interval {
-                        start: start.into(),
-                        stop: range.end().into(),
-                        val: scope_id,
-                    });
             }
             ScopeEnded { .. } => {}
             DeclarationFound {
@@ -433,15 +430,9 @@ impl SemanticModelBuilder {
     pub fn build(self) -> SemanticModel {
         let data = SemanticModelData {
             root: self.root.syntax().as_send().expect("To be a root node"),
+            scope_by_range: ScopeRangeIndex::from_scopes(&self.scopes),
             flavor: self.flavor,
             scopes: self.scopes,
-            scope_by_range: Lapper::new(
-                self.scope_range_by_start
-                    .values()
-                    .flat_map(|scopes| scopes.iter())
-                    .cloned()
-                    .collect(),
-            ),
             scope_hoisted_to_by_range: self.scope_hoisted_to_by_range,
             binding_node_by_start: self
                 .binding_node_by_start

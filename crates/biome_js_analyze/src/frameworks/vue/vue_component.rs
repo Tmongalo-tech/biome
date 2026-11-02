@@ -11,10 +11,10 @@ use biome_js_syntax::{
     JsExportDefaultExpressionClause, JsFunctionDeclaration, JsFunctionExpression,
     JsIdentifierBinding, JsMethodObjectMember, JsModule, JsNamedImportSpecifier,
     JsNamedImportSpecifiers, JsNamespaceImportSpecifier, JsObjectBindingPattern,
-    JsPropertyObjectMember, JsReferenceIdentifier, JsShorthandNamedImportSpecifier,
-    JsStringLiteralExpression, JsSyntaxKind, JsSyntaxNode, JsVariableDeclarator,
-    TsIdentifierBinding, TsInterfaceDeclaration, TsPropertySignatureTypeMember,
-    TsTypeAliasDeclaration,
+    JsObjectExpression, JsPropertyObjectMember, JsReferenceIdentifier,
+    JsShorthandNamedImportSpecifier, JsStringLiteralExpression, JsSyntaxKind, JsSyntaxNode,
+    JsVariableDeclarator, TsIdentifierBinding, TsInterfaceDeclaration,
+    TsPropertySignatureTypeMember, TsTypeAliasDeclaration, TsTypeMemberList,
 };
 use biome_languages::JsFileSource;
 use biome_rowan::{
@@ -390,6 +390,201 @@ impl VueComponentDeclarations for VueSetupComponent {
     }
 }
 
+impl VueSetupComponent {
+    /// Returns the top-level `defineProps()` calls of the component.
+    pub fn define_props_calls(&self) -> Vec<VueDefinePropsCall> {
+        let model = &self.model;
+        let mut result = Vec::new();
+        for item in self.js_module.items() {
+            match item {
+                AnyJsModuleItem::AnyJsStatement(AnyJsStatement::JsExpressionStatement(
+                    expression_statement,
+                )) => {
+                    if let Ok(expression) = expression_statement.expression() {
+                        result.extend(VueDefinePropsCall::from_expression(
+                            &expression,
+                            model,
+                            None,
+                        ));
+                    }
+                }
+                AnyJsModuleItem::AnyJsStatement(AnyJsStatement::JsVariableStatement(
+                    variable_statement,
+                )) => {
+                    let Ok(declaration) = variable_statement.declaration() else {
+                        continue;
+                    };
+                    for declarator in declaration.declarators().iter().flatten() {
+                        let Some(expression) = declarator
+                            .initializer()
+                            .and_then(|initializer| initializer.expression().ok())
+                        else {
+                            continue;
+                        };
+                        let destructuring = declarator
+                            .id()
+                            .ok()
+                            .and_then(|id| id.as_js_object_binding_pattern().cloned());
+                        result.extend(VueDefinePropsCall::from_expression(
+                            &expression,
+                            model,
+                            destructuring,
+                        ));
+                    }
+                }
+                _ => {}
+            }
+        }
+        result
+    }
+
+    /// Returns the top-level `defineEmits()` calls of the component.
+    pub fn define_emits_calls(&self) -> Vec<VueDefineEmitsCall> {
+        let model = &self.model;
+        let mut result = Vec::new();
+        for item in self.js_module.items() {
+            let AnyJsModuleItem::AnyJsStatement(statement) = item else {
+                continue;
+            };
+            match statement {
+                AnyJsStatement::JsExpressionStatement(expression_statement) => {
+                    if let Ok(expression) = expression_statement.expression() {
+                        result.extend(VueDefineEmitsCall::from_expression(
+                            &expression,
+                            model,
+                            None,
+                        ));
+                    }
+                }
+                AnyJsStatement::JsVariableStatement(variable_statement) => {
+                    let Ok(declaration) = variable_statement.declaration() else {
+                        continue;
+                    };
+                    for declarator in declaration.declarators().iter().flatten() {
+                        let Some(expression) = declarator
+                            .initializer()
+                            .and_then(|initializer| initializer.expression().ok())
+                        else {
+                            continue;
+                        };
+                        let binding = declarator.id().ok().and_then(|id| {
+                            id.as_any_js_binding()?.as_js_identifier_binding().cloned()
+                        });
+                        result.extend(VueDefineEmitsCall::from_expression(
+                            &expression,
+                            model,
+                            binding,
+                        ));
+                    }
+                }
+                _ => {}
+            }
+        }
+        result
+    }
+}
+
+/// A `defineEmits()` call in `<script setup>`, along with the variable it is assigned to.
+#[derive(Debug)]
+pub struct VueDefineEmitsCall {
+    call: JsCallExpression,
+    /// The variable holding the emit function, as in `const emit = defineEmits(['change'])`.
+    binding: Option<JsIdentifierBinding>,
+}
+
+impl VueDefineEmitsCall {
+    fn from_expression(
+        expression: &AnyJsExpression,
+        model: &SemanticModel,
+        binding: Option<JsIdentifierBinding>,
+    ) -> Option<Self> {
+        let call = expression.inner_expression()?;
+        let call = call.as_js_call_expression()?;
+        is_vue_compiler_macro_call(call, model, "defineEmits").then(|| Self {
+            call: call.clone(),
+            binding,
+        })
+    }
+
+    pub fn call(&self) -> &JsCallExpression {
+        &self.call
+    }
+
+    pub fn binding(&self) -> Option<&JsIdentifierBinding> {
+        self.binding.as_ref()
+    }
+}
+
+/// A `defineProps()` call in `<script setup>`, along with the sources of default values for its
+/// props.
+#[derive(Debug)]
+pub struct VueDefinePropsCall {
+    call: JsCallExpression,
+    /// The defaults object passed to `withDefaults()`, as in
+    /// `withDefaults(defineProps<Props>(), { foo: true })`.
+    with_defaults: Option<JsObjectExpression>,
+    /// The destructuring pattern the props are assigned to, as in
+    /// `const { foo = true } = defineProps<Props>()`.
+    destructuring: Option<JsObjectBindingPattern>,
+}
+
+impl VueDefinePropsCall {
+    /// Matches `defineProps(...)` and `withDefaults(defineProps(...), { ... })`.
+    fn from_expression(
+        expression: &AnyJsExpression,
+        model: &SemanticModel,
+        destructuring: Option<JsObjectBindingPattern>,
+    ) -> Option<Self> {
+        let call = expression.inner_expression()?;
+        let call = call.as_js_call_expression()?;
+        if is_vue_compiler_macro_call(call, model, "defineProps") {
+            return Some(Self {
+                call: call.clone(),
+                with_defaults: None,
+                destructuring,
+            });
+        }
+        if !is_vue_compiler_macro_call(call, model, "withDefaults") {
+            return None;
+        }
+        let arguments = call.arguments().ok()?;
+        let [Some(props), defaults] = arguments.get_arguments_by_index([0, 1]) else {
+            return None;
+        };
+        let props = props.as_any_js_expression()?.inner_expression()?;
+        let props = props.as_js_call_expression()?;
+        if !is_vue_compiler_macro_call(props, model, "defineProps") {
+            return None;
+        }
+        let with_defaults = defaults
+            .and_then(|defaults| defaults.as_any_js_expression()?.inner_expression())
+            .and_then(|defaults| defaults.as_js_object_expression().cloned());
+        Some(Self {
+            call: props.clone(),
+            with_defaults,
+            destructuring,
+        })
+    }
+
+    /// Returns the `defineProps()` call itself, even when it is wrapped in `withDefaults()`.
+    pub fn define_props_call(&self) -> &JsCallExpression {
+        &self.call
+    }
+
+    /// Returns the props declared by this call.
+    pub fn declarations(&self, model: &SemanticModel) -> Vec<VueDeclaration> {
+        get_props_declarations_from_call(&self.call, model)
+    }
+
+    pub fn with_defaults(&self) -> Option<&JsObjectExpression> {
+        self.with_defaults.as_ref()
+    }
+
+    pub fn destructuring(&self) -> Option<&JsObjectBindingPattern> {
+        self.destructuring.as_ref()
+    }
+}
+
 impl VueOptionsApiBasedComponent for VueOptionsApiComponent {
     fn definition_expression(&self) -> Option<AnyJsExpression> {
         self.default_expression_clause.expression().ok()
@@ -539,7 +734,10 @@ impl<T: VueOptionsApiBasedComponent> VueComponentDeclarations for T {
                         continue;
                     };
                     if let Ok(expression) = property.value() {
-                        result.extend(collect_computed_and_method_declarations(&expression));
+                        result.extend(collect_computed_and_method_declarations(
+                            &expression,
+                            VueDeclaration::Computed,
+                        ));
                     }
                 }
                 "methods" => {
@@ -551,7 +749,10 @@ impl<T: VueOptionsApiBasedComponent> VueComponentDeclarations for T {
                         continue;
                     };
                     if let Ok(expression) = property.value() {
-                        result.extend(collect_computed_and_method_declarations(&expression));
+                        result.extend(collect_computed_and_method_declarations(
+                            &expression,
+                            VueDeclaration::Method,
+                        ));
                     }
                 }
                 "data" => {
@@ -786,7 +987,8 @@ impl AnyVueSetupDeclaration {
 }
 
 /// Checks if the reference resolves to a variable initialized by a `defineProps()` call,
-/// as in `const props = defineProps(['foo'])`.
+/// as in `const props = defineProps(['foo'])` or
+/// `const props = withDefaults(defineProps<Props>(), {})`.
 fn is_props_reference(reference: &JsReferenceIdentifier, model: &SemanticModel) -> bool {
     model
         .binding(reference)
@@ -799,13 +1001,8 @@ fn is_props_reference(reference: &JsReferenceIdentifier, model: &SemanticModel) 
         })
         .and_then(|declarator| declarator.initializer())
         .and_then(|initializer| initializer.expression().ok())
-        .and_then(|expression| expression.inner_expression())
-        .is_some_and(|expression| match expression {
-            AnyJsExpression::JsCallExpression(call) => {
-                is_vue_compiler_macro_call(&call, model, "defineProps")
-            }
-            _ => false,
-        })
+        .and_then(|expression| VueDefinePropsCall::from_expression(&expression, model, None))
+        .is_some()
 }
 
 impl VueDeclarationName for AnyVueSetupDeclaration {
@@ -919,52 +1116,43 @@ fn collect_props_declarations_from_type(
     any_type: &AnyTsType,
     model: &SemanticModel,
 ) -> Vec<VueDeclaration> {
+    resolve_props_type_members(any_type, model)
+        .into_iter()
+        .flatten()
+        .filter_map(|member| match member {
+            AnyTsTypeMember::TsPropertySignatureTypeMember(property) => Some(VueDeclaration::Prop(
+                AnyVuePropDeclaration::TsPropertySignatureTypeMember(property),
+            )),
+            _ => None,
+        })
+        .collect()
+}
+
+/// Resolves the members of the type passed to `defineProps<T>()`.
+///
+/// Supports object types, and references to type aliases and interfaces declared in the same file.
+pub fn resolve_props_type_members(
+    any_type: &AnyTsType,
+    model: &SemanticModel,
+) -> Option<TsTypeMemberList> {
     match any_type {
-        AnyTsType::TsObjectType(object_type) => {
-            let mut result = vec![];
-            for member in object_type.members() {
-                if let AnyTsTypeMember::TsPropertySignatureTypeMember(property) = member {
-                    result.push(VueDeclaration::Prop(
-                        AnyVuePropDeclaration::TsPropertySignatureTypeMember(property.clone()),
-                    ));
-                }
-            }
-            result
+        AnyTsType::TsObjectType(object_type) => Some(object_type.members()),
+        AnyTsType::TsParenthesizedType(parenthesized_type) => {
+            resolve_props_type_members(&parenthesized_type.ty().ok()?, model)
         }
-        AnyTsType::TsParenthesizedType(parenthesized_type) => parenthesized_type
-            .ty()
-            .map(|ty| collect_props_declarations_from_type(&ty, model))
-            .unwrap_or_default(),
-        AnyTsType::TsReferenceType(reference_type) => reference_type
-            .name()
-            .ok()
-            .and_then(|name| {
-                let reference_identifier = name.as_js_reference_identifier()?;
-                let binding_syntax = reference_identifier.binding(model)?;
-                if let Some(identifier_binding) = TsIdentifierBinding::cast_ref(&binding_syntax) {
-                    if let Some(type_alias) = identifier_binding.parent::<TsTypeAliasDeclaration>()
-                    {
-                        let ty = type_alias.ty().ok()?;
-                        return Some(collect_props_declarations_from_type(&ty, model));
-                    } else if let Some(interface) =
-                        identifier_binding.parent::<TsInterfaceDeclaration>()
-                    {
-                        let mut result = vec![];
-                        for member in interface.members() {
-                            if let AnyTsTypeMember::TsPropertySignatureTypeMember(property) = member
-                            {
-                                result.push(VueDeclaration::Prop(
-                                    AnyVuePropDeclaration::TsPropertySignatureTypeMember(property),
-                                ))
-                            }
-                        }
-                        return Some(result);
-                    }
-                }
-                None
-            })
-            .unwrap_or_default(),
-        _ => vec![],
+        AnyTsType::TsReferenceType(reference_type) => {
+            let name = reference_type.name().ok()?;
+            let binding_syntax = name.as_js_reference_identifier()?.binding(model)?;
+            let identifier_binding = TsIdentifierBinding::cast(binding_syntax)?;
+            if let Some(type_alias) = identifier_binding.parent::<TsTypeAliasDeclaration>() {
+                resolve_props_type_members(&type_alias.ty().ok()?, model)
+            } else {
+                identifier_binding
+                    .parent::<TsInterfaceDeclaration>()
+                    .map(|interface| interface.members())
+            }
+        }
+        _ => None,
     }
 }
 
@@ -1008,7 +1196,12 @@ fn collect_props_declarations_from_expression(expression: &AnyJsExpression) -> V
     }
 }
 
-fn collect_computed_and_method_declarations(expression: &AnyJsExpression) -> Vec<VueDeclaration> {
+/// Collects the members of a `computed` or `methods` group. `declaration` wraps each member in
+/// the declaration kind of the group.
+fn collect_computed_and_method_declarations(
+    expression: &AnyJsExpression,
+    declaration: fn(AnyVueMethod) -> VueDeclaration,
+) -> Vec<VueDeclaration> {
     let AnyJsExpression::JsObjectExpression(object_expression) = expression else {
         return vec![];
     };
@@ -1017,12 +1210,12 @@ fn collect_computed_and_method_declarations(expression: &AnyJsExpression) -> Vec
         .iter()
         .flatten()
         .filter_map(|member| match member {
-            AnyJsObjectMember::JsPropertyObjectMember(property) => Some(VueDeclaration::Computed(
-                AnyVueMethod::JsPropertyObjectMember(property),
-            )),
-            AnyJsObjectMember::JsMethodObjectMember(method) => Some(VueDeclaration::Computed(
-                AnyVueMethod::JsMethodObjectMember(method),
-            )),
+            AnyJsObjectMember::JsPropertyObjectMember(property) => {
+                Some(declaration(AnyVueMethod::JsPropertyObjectMember(property)))
+            }
+            AnyJsObjectMember::JsMethodObjectMember(method) => {
+                Some(declaration(AnyVueMethod::JsMethodObjectMember(method)))
+            }
             _ => None,
         })
         .collect()
@@ -1279,16 +1472,8 @@ impl VueCollectSetupDeclarations for JsVariableDeclarator {
 
 impl VueCollectSetupDeclarations for AnyJsExpression {
     fn collect_vue_setup_declarations(&self, model: &SemanticModel) -> Vec<VueDeclaration> {
-        self.inner_expression()
-            .and_then(|expression| match expression {
-                Self::JsCallExpression(call) => {
-                    if !is_vue_compiler_macro_call(&call, model, "defineProps") {
-                        return None;
-                    }
-                    Some(get_props_declarations_from_call(&call, model))
-                }
-                _ => None,
-            })
+        VueDefinePropsCall::from_expression(self, model, None)
+            .map(|call| call.declarations(model))
             .unwrap_or_default()
     }
 }

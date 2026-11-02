@@ -7,7 +7,8 @@ use biome_console::{
     fmt::{Display, Formatter as ConsoleFormatter},
     markup,
 };
-use biome_formatter::{Buffer, Format, FormatElement, FormatResult, prelude::*};
+use biome_formatter::rowan::FormatElement;
+use biome_formatter::{Buffer, Format, FormatResult, rowan::prelude::*};
 use biome_html_syntax::{AnyHtmlContent, AnyHtmlElement, HtmlLanguage, HtmlSyntaxToken};
 use biome_rowan::{
     AstNode, SyntaxResult, TextLen, TextRange, TextSize, TokenText, syntax::SyntaxTrivia,
@@ -480,36 +481,48 @@ where
 
             prev_child_was_content = true;
         } else {
-            let text = child.to_string();
-            let mut chunks = HtmlSplitChunksIterator::new(&text).peekable();
-
-            // Text starting with a whitespace
-            if let Some((_, HtmlTextChunk::Whitespace(_whitespace))) = chunks.peek() {
-                // SAFETY: We just checked this above.
-                match chunks.next().unwrap() {
-                    (_, HtmlTextChunk::Whitespace(whitespace)) => {
-                        if whitespace.contains('\n') {
-                            // A text only consisting of whitespace that also contains a new line isn't considered meaningful text.
-                            // It can be entirely removed from the content without changing the semantics.
-                            let newlines = whitespace.chars().filter(|c| *c == '\n').count();
-
-                            // Keep up to one blank line between tags.
-                            // ```html
-                            // <div>
-                            //
-                            //   <MyElement />
-                            // </div>
-                            // ```
-                            if newlines > 1 {
-                                builder.entry(HtmlChild::EmptyLine);
-                            } else {
-                                builder.entry(HtmlChild::Newline);
+            // Only the leading whitespace of the child's text (including trivia) matters here,
+            // so scan the text chunk by chunk and stop at the first non-whitespace character
+            // instead of stringifying the whole subtree.
+            let mut has_leading_whitespace = false;
+            let mut newlines = 0usize;
+            let _ = child
+                .syntax()
+                .text_with_trivia()
+                .try_for_each_chunk(|chunk| {
+                    for c in chunk.chars() {
+                        match c {
+                            '\n' => {
+                                has_leading_whitespace = true;
+                                newlines += 1;
                             }
-                        } else {
-                            builder.entry(HtmlChild::Whitespace)
+                            ' ' | '\t' | '\r' => has_leading_whitespace = true,
+                            _ => return Err(()),
                         }
                     }
-                    _ => unreachable!(),
+                    Ok(())
+                });
+
+            // Text starting with a whitespace
+            if has_leading_whitespace {
+                if newlines > 0 {
+                    // A text only consisting of whitespace that also contains a new line isn't considered meaningful text.
+                    // It can be entirely removed from the content without changing the semantics.
+
+                    // Keep up to one blank line between tags.
+                    // ```html
+                    // <div>
+                    //
+                    //   <MyElement />
+                    // </div>
+                    // ```
+                    if newlines > 1 {
+                        builder.entry(HtmlChild::EmptyLine);
+                    } else {
+                        builder.entry(HtmlChild::Newline);
+                    }
+                } else {
+                    builder.entry(HtmlChild::Whitespace)
                 }
             }
 

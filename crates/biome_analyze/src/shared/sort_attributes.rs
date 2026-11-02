@@ -1,4 +1,4 @@
-use biome_rowan::{AstNode, Language, SyntaxToken, TriviaPieceKind};
+use biome_rowan::{AstNode, Language, SyntaxToken};
 use biome_string_case::StrLikeExtension;
 use std::cmp::Ordering;
 
@@ -37,6 +37,31 @@ pub trait SortableAttribute {
             (None, Some(_)) => Ordering::Greater,
             (None, None) => Ordering::Equal,
         }
+    }
+
+    fn sort_first_index(&self, sort_first: &[Box<str>]) -> usize {
+        self.name()
+            .and_then(|name| {
+                sort_first
+                    .iter()
+                    .position(|listed| listed.as_ref() == name.text_trimmed())
+            })
+            .unwrap_or(sort_first.len())
+    }
+
+    fn cmp_sort_first(
+        &self,
+        other: &Self,
+        sort_first: &[Box<str>],
+        base: impl Fn(&Self, &Self) -> Ordering,
+    ) -> Ordering {
+        if sort_first.is_empty() {
+            return base(self, other);
+        }
+
+        self.sort_first_index(sort_first)
+            .cmp(&other.sort_first_index(sort_first))
+            .then_with(|| base(self, other))
     }
 }
 
@@ -92,8 +117,7 @@ impl<T: SortableAttribute + Clone> AttributeGroup<T> {
 
                 if !ends_in_whitespace && !next_starts_with_whitespace {
                     let old_last_token = sorted_attr.node().syntax().last_token().unwrap();
-                    let new_last_token =
-                        old_last_token.with_trailing_trivia([(TriviaPieceKind::Whitespace, " ")]);
+                    let new_last_token = old_last_token.with_trailing_space();
 
                     *sorted_attr = sorted_attr
                         .clone()

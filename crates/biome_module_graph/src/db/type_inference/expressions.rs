@@ -2,14 +2,14 @@ use super::{
     collected_type_result,
     lookup::{
         MemberLookupKey, MemberLookupMode, MemberLookupResolver, apply_substitutions,
-        find_member_key_type_with_resolver, find_member_type_with_resolver,
-        substitutions_for_instance,
+        evaluate_mapped_type_with_resolver, find_member_key_type_with_resolver,
+        find_member_type_with_resolver, substitutions_for_instance,
     },
     normalize_structural_type,
     resolver::ResolutionCtx,
 };
 use crate::db::queries::{
-    CallArgumentTypeInput, ResolvedCallArgument, infer_call_argument_type,
+    CallArgumentTypeInput, CallableFunctionInput, ResolvedCallArgument, infer_call_argument_type,
     infer_call_expression_return_type_from_args, infer_constructor_argument_type,
     resolve_callable_function,
 };
@@ -24,8 +24,9 @@ use biome_js_type_info::{
         InternedClass as InferredClass, InternedConstructor as InferredConstructor,
         InternedFunction as InferredFunction,
         InternedGenericTypeParameter as InferredGenericTypeParameter,
-        InternedLiteral as InferredInternedLiteral, InternedTuple as InferredTuple,
-        Literal as InferredLiteral, LocalTypeHandle as InferredLocalTypeHandle,
+        InternedLiteral as InferredInternedLiteral, InternedMappedType as InferredMappedType,
+        InternedTuple as InferredTuple, Literal as InferredLiteral,
+        LocalTypeHandle as InferredLocalTypeHandle,
         NamedFunctionParameter as InferredNamedFunctionParameter, ReturnType as InferredReturnType,
         TupleElementType as InferredTupleElementType, TypeData as InferredTypeData,
         TypeMember as InferredTypeMember, TypeofExpression as InferredTypeofExpression,
@@ -91,11 +92,29 @@ impl<'db> MemberLookupResolver<'db> for ResolutionCtx<'db, '_> {
         } else {
             ty
         };
+        let ty = apply_substitutions(db, ty, substitutions);
         let Ok(ty) = normalize_structural_type(db, ty, |ty| ty) else {
             return InferredTypeData::Unknown;
         };
-        let ty = apply_substitutions(db, ty, substitutions);
         self.member_type(ty, is_optional)
+    }
+
+    fn evaluate_mapped_type(
+        &mut self,
+        db: &'db dyn crate::ModuleDb,
+        mapped: InferredMappedType<'db>,
+        substitutions: &[biome_js_type_info::interned_types::TypeSubstitution<'db>],
+    ) -> Option<InferredTypeData<'db>> {
+        let key = (mapped, substitutions.to_vec());
+        if let Some(evaluated) = self.mapped_types.get(&key) {
+            return *evaluated;
+        }
+        let in_progress_reads = self.in_progress_reads.get();
+        let evaluated = evaluate_mapped_type_with_resolver(db, self, mapped, substitutions);
+        if self.in_progress_reads.get() == in_progress_reads {
+            self.mapped_types.insert(key, evaluated);
+        }
+        evaluated
     }
 }
 
@@ -531,7 +550,9 @@ impl<'db> ResolutionCtx<'db, '_> {
                 | InferredTypeData::Generic(_)
                 | InferredTypeData::Local(_)
                 | InferredTypeData::GlobalType(_)
+                | InferredTypeData::GlobalLocal(_)
                 | InferredTypeData::IndexedAccess(_)
+                | InferredTypeData::MappedType(_)
                 | InferredTypeData::Intersection(_)
                 | InferredTypeData::TypeOperator(_)
                 | InferredTypeData::Literal(_)
@@ -644,6 +665,7 @@ impl<'db> ResolutionCtx<'db, '_> {
             | RawTypeData::Namespace(_)
             | RawTypeData::Generic(_)
             | RawTypeData::IndexedAccess(_)
+            | RawTypeData::MappedType(_)
             | RawTypeData::Intersection(_)
             | RawTypeData::Union(_)
             | RawTypeData::TypeOperator(_)
@@ -819,6 +841,7 @@ impl<'db> ResolutionCtx<'db, '_> {
             InferredTypeData::Unknown
             | InferredTypeData::Global
             | InferredTypeData::GlobalType(_)
+            | InferredTypeData::GlobalLocal(_)
             | InferredTypeData::BigInt
             | InferredTypeData::Boolean
             | InferredTypeData::Null
@@ -839,6 +862,7 @@ impl<'db> ResolutionCtx<'db, '_> {
             | InferredTypeData::Union(_)
             | InferredTypeData::TypeOperator(_)
             | InferredTypeData::IndexedAccess(_)
+            | InferredTypeData::MappedType(_)
             | InferredTypeData::Literal(_)
             | InferredTypeData::InstanceOf(_)
             | InferredTypeData::MergedReference(_)
@@ -884,7 +908,8 @@ impl<'db> ResolutionCtx<'db, '_> {
         has_initializer: bool,
     ) -> Option<InferredTypeData<'db>> {
         let function = self.resolve_inferred_type(function);
-        let function = resolve_callable_function(self.db, function)?;
+        let function =
+            resolve_callable_function(self.db, CallableFunctionInput::new(self.db, function))?;
         let parameter = function
             .parameters(self.db)
             .iter()
@@ -1011,6 +1036,7 @@ impl<'db> ResolutionCtx<'db, '_> {
             ty @ (InferredTypeData::Unknown
             | InferredTypeData::Global
             | InferredTypeData::GlobalType(_)
+            | InferredTypeData::GlobalLocal(_)
             | InferredTypeData::BigInt
             | InferredTypeData::Boolean
             | InferredTypeData::Null
@@ -1032,6 +1058,7 @@ impl<'db> ResolutionCtx<'db, '_> {
             | InferredTypeData::Union(_)
             | InferredTypeData::TypeOperator(_)
             | InferredTypeData::IndexedAccess(_)
+            | InferredTypeData::MappedType(_)
             | InferredTypeData::Literal(_)
             | InferredTypeData::MergedReference(_)
             | InferredTypeData::TypeofExpression(_)
@@ -1066,11 +1093,16 @@ impl<'db> ResolutionCtx<'db, '_> {
         callee: InferredTypeData<'db>,
         args: &[ResolvedCallArgument<'db>],
     ) -> Option<InferredTypeData<'db>> {
-        let callee = self.resolve_inferred_type(callee);
+        // Namespace members such as `Intl.Collator` refer to global classes by handle.
+        let callee = self
+            .resolve_inferred_type(callee)
+            .expand_canonical_global(self.db);
         let (class_ty, class, explicit_type_parameters) = match callee {
             InferredTypeData::Class(class) => (callee, class, Box::default()),
             InferredTypeData::InstanceOf(instance) => {
-                let class_ty = self.resolve_inferred_type(instance.ty(self.db));
+                let class_ty = self
+                    .resolve_inferred_type(instance.ty(self.db))
+                    .expand_canonical_global(self.db);
                 let InferredTypeData::Class(class) = class_ty else {
                     return None;
                 };
@@ -1086,6 +1118,7 @@ impl<'db> ResolutionCtx<'db, '_> {
             InferredTypeData::Unknown
             | InferredTypeData::Global
             | InferredTypeData::GlobalType(_)
+            | InferredTypeData::GlobalLocal(_)
             | InferredTypeData::BigInt
             | InferredTypeData::Boolean
             | InferredTypeData::Null
@@ -1107,6 +1140,7 @@ impl<'db> ResolutionCtx<'db, '_> {
             | InferredTypeData::Union(_)
             | InferredTypeData::TypeOperator(_)
             | InferredTypeData::IndexedAccess(_)
+            | InferredTypeData::MappedType(_)
             | InferredTypeData::Literal(_)
             | InferredTypeData::MergedReference(_)
             | InferredTypeData::TypeofExpression(_)
@@ -1133,6 +1167,7 @@ impl<'db> ResolutionCtx<'db, '_> {
                 InferredTypeData::Unknown
                 | InferredTypeData::Global
                 | InferredTypeData::GlobalType(_)
+                | InferredTypeData::GlobalLocal(_)
                 | InferredTypeData::BigInt
                 | InferredTypeData::Boolean
                 | InferredTypeData::Null
@@ -1155,6 +1190,7 @@ impl<'db> ResolutionCtx<'db, '_> {
                 | InferredTypeData::Union(_)
                 | InferredTypeData::TypeOperator(_)
                 | InferredTypeData::IndexedAccess(_)
+                | InferredTypeData::MappedType(_)
                 | InferredTypeData::Literal(_)
                 | InferredTypeData::InstanceOf(_)
                 | InferredTypeData::MergedReference(_)
@@ -1235,7 +1271,10 @@ impl<'db> ResolutionCtx<'db, '_> {
                 }
             }
 
-            let Some(parameter_function) = resolve_callable_function(self.db, parameter_ty) else {
+            let Some(parameter_function) = resolve_callable_function(
+                self.db,
+                CallableFunctionInput::new(self.db, parameter_ty),
+            ) else {
                 continue;
             };
             let InferredReturnType::Type(parameter_return_ty) =
@@ -1243,7 +1282,9 @@ impl<'db> ResolutionCtx<'db, '_> {
             else {
                 continue;
             };
-            let Some(argument_function) = resolve_callable_function(self.db, arg) else {
+            let Some(argument_function) =
+                resolve_callable_function(self.db, CallableFunctionInput::new(self.db, arg))
+            else {
                 continue;
             };
             let InferredReturnType::Type(argument_return_ty) =
@@ -1421,6 +1462,7 @@ impl<'db> ResolutionCtx<'db, '_> {
             InferredTypeData::Unknown
             | InferredTypeData::Global
             | InferredTypeData::GlobalType(_)
+            | InferredTypeData::GlobalLocal(_)
             | InferredTypeData::BigInt
             | InferredTypeData::Boolean
             | InferredTypeData::Null
@@ -1441,6 +1483,7 @@ impl<'db> ResolutionCtx<'db, '_> {
             | InferredTypeData::Union(_)
             | InferredTypeData::TypeOperator(_)
             | InferredTypeData::IndexedAccess(_)
+            | InferredTypeData::MappedType(_)
             | InferredTypeData::Literal(_)
             | InferredTypeData::InstanceOf(_)
             | InferredTypeData::MergedReference(_)
@@ -1466,6 +1509,7 @@ impl<'db> ResolutionCtx<'db, '_> {
             InferredTypeData::Unknown
             | InferredTypeData::Global
             | InferredTypeData::GlobalType(_)
+            | InferredTypeData::GlobalLocal(_)
             | InferredTypeData::BigInt
             | InferredTypeData::Boolean
             | InferredTypeData::Null
@@ -1487,6 +1531,7 @@ impl<'db> ResolutionCtx<'db, '_> {
             | InferredTypeData::Union(_)
             | InferredTypeData::TypeOperator(_)
             | InferredTypeData::IndexedAccess(_)
+            | InferredTypeData::MappedType(_)
             | InferredTypeData::Literal(_)
             | InferredTypeData::InstanceOf(_)
             | InferredTypeData::MergedReference(_)
@@ -1623,6 +1668,7 @@ impl<'db> ResolutionCtx<'db, '_> {
                         InferredTypeData::Unknown => types.push(InferredTypeData::Unknown),
                         ty @ (InferredTypeData::Global
                         | InferredTypeData::GlobalType(_)
+                        | InferredTypeData::GlobalLocal(_)
                         | InferredTypeData::BigInt
                         | InferredTypeData::Boolean
                         | InferredTypeData::Null
@@ -1644,6 +1690,7 @@ impl<'db> ResolutionCtx<'db, '_> {
                         | InferredTypeData::Union(_)
                         | InferredTypeData::TypeOperator(_)
                         | InferredTypeData::IndexedAccess(_)
+                        | InferredTypeData::MappedType(_)
                         | InferredTypeData::Literal(_)
                         | InferredTypeData::InstanceOf(_)
                         | InferredTypeData::MergedReference(_)
@@ -1693,6 +1740,7 @@ impl<'db> ResolutionCtx<'db, '_> {
             }
             ty @ (InferredTypeData::Unknown
             | InferredTypeData::GlobalType(_)
+            | InferredTypeData::GlobalLocal(_)
             | InferredTypeData::BigInt
             | InferredTypeData::Boolean
             | InferredTypeData::Null
@@ -1712,6 +1760,7 @@ impl<'db> ResolutionCtx<'db, '_> {
             | InferredTypeData::Intersection(_)
             | InferredTypeData::TypeOperator(_)
             | InferredTypeData::IndexedAccess(_)
+            | InferredTypeData::MappedType(_)
             | InferredTypeData::Literal(_)
             | InferredTypeData::MergedReference(_)
             | InferredTypeData::TypeofExpression(_)
@@ -1835,6 +1884,7 @@ impl<'db> ResolutionCtx<'db, '_> {
             | RawTypeData::Union(_)
             | RawTypeData::TypeOperator(_)
             | RawTypeData::IndexedAccess(_)
+            | RawTypeData::MappedType(_)
             | RawTypeData::InstanceOf(_)
             | RawTypeData::Reference(_)
             | RawTypeData::MergedReference(_)
@@ -1858,13 +1908,30 @@ impl<'db> ResolutionCtx<'db, '_> {
         Some(self.member_type(ty, member.is_optional()))
     }
 
+    /// Looks up a member, reusing the result of an identical earlier lookup.
+    ///
+    /// A result is cached only when computing it read no type whose resolution
+    /// was still in progress and encountered no inference cycle, since either
+    /// can make it less precise than the same lookup performed later.
     fn find_member_type_on_resolved_type(
         &mut self,
         ty: InferredTypeData<'db>,
         member_name: &str,
         mode: MemberLookupMode,
     ) -> Option<InferredTypeData<'db>> {
-        find_member_type_with_resolver(self.db, self, ty, member_name, mode)
+        let key = (ty, Text::from(member_name.to_owned()), mode);
+        if let Some(member_ty) = self.member_lookups.get(&key) {
+            return *member_ty;
+        }
+        let in_progress_reads = self.in_progress_reads.get();
+        let encountered_inference_cycle = self.encountered_inference_cycle();
+        let member_ty = find_member_type_with_resolver(self.db, self, ty, member_name, mode);
+        if self.in_progress_reads.get() == in_progress_reads
+            && self.encountered_inference_cycle() == encountered_inference_cycle
+        {
+            self.member_lookups.insert(key, member_ty);
+        }
+        member_ty
     }
 
     /// Builds the simplified `Promise` method type used by call inference.
@@ -2090,6 +2157,7 @@ impl<'db> ResolutionCtx<'db, '_> {
                 InferredTypeData::Unknown
                 | InferredTypeData::Global
                 | InferredTypeData::GlobalType(_)
+                | InferredTypeData::GlobalLocal(_)
                 | InferredTypeData::BigInt
                 | InferredTypeData::Boolean
                 | InferredTypeData::Number
@@ -2109,6 +2177,7 @@ impl<'db> ResolutionCtx<'db, '_> {
                 | InferredTypeData::Intersection(_)
                 | InferredTypeData::TypeOperator(_)
                 | InferredTypeData::IndexedAccess(_)
+                | InferredTypeData::MappedType(_)
                 | InferredTypeData::Literal(_)
                 | InferredTypeData::InstanceOf(_)
                 | InferredTypeData::MergedReference(_)
@@ -2192,6 +2261,7 @@ impl<'db> ResolutionCtx<'db, '_> {
                 InferredTypeData::Unknown
                 | InferredTypeData::Global
                 | InferredTypeData::GlobalType(_)
+                | InferredTypeData::GlobalLocal(_)
                 | InferredTypeData::BigInt
                 | InferredTypeData::Boolean
                 | InferredTypeData::Null
@@ -2212,6 +2282,7 @@ impl<'db> ResolutionCtx<'db, '_> {
                 | InferredTypeData::Intersection(_)
                 | InferredTypeData::TypeOperator(_)
                 | InferredTypeData::IndexedAccess(_)
+                | InferredTypeData::MappedType(_)
                 | InferredTypeData::Literal(_)
                 | InferredTypeData::InstanceOf(_)
                 | InferredTypeData::MergedReference(_)
@@ -2265,6 +2336,7 @@ impl<'db> ResolutionCtx<'db, '_> {
             InferredTypeData::Unknown
             | InferredTypeData::Global
             | InferredTypeData::GlobalType(_)
+            | InferredTypeData::GlobalLocal(_)
             | InferredTypeData::BigInt
             | InferredTypeData::Boolean
             | InferredTypeData::Null
@@ -2286,6 +2358,7 @@ impl<'db> ResolutionCtx<'db, '_> {
             | InferredTypeData::Union(_)
             | InferredTypeData::TypeOperator(_)
             | InferredTypeData::IndexedAccess(_)
+            | InferredTypeData::MappedType(_)
             | InferredTypeData::Literal(_)
             | InferredTypeData::InstanceOf(_)
             | InferredTypeData::MergedReference(_)
@@ -2326,6 +2399,7 @@ impl<'db> ResolutionCtx<'db, '_> {
             subject @ (InferredTypeData::Unknown
             | InferredTypeData::Global
             | InferredTypeData::GlobalType(_)
+            | InferredTypeData::GlobalLocal(_)
             | InferredTypeData::BigInt
             | InferredTypeData::Boolean
             | InferredTypeData::Null
@@ -2347,6 +2421,7 @@ impl<'db> ResolutionCtx<'db, '_> {
             | InferredTypeData::Union(_)
             | InferredTypeData::TypeOperator(_)
             | InferredTypeData::IndexedAccess(_)
+            | InferredTypeData::MappedType(_)
             | InferredTypeData::Literal(_)
             | InferredTypeData::MergedReference(_)
             | InferredTypeData::TypeofExpression(_)
@@ -2440,6 +2515,7 @@ impl<'db> ResolutionCtx<'db, '_> {
                 InferredTypeData::Unknown
                 | InferredTypeData::Global
                 | InferredTypeData::GlobalType(_)
+                | InferredTypeData::GlobalLocal(_)
                 | InferredTypeData::BigInt
                 | InferredTypeData::Boolean
                 | InferredTypeData::Null
@@ -2457,6 +2533,7 @@ impl<'db> ResolutionCtx<'db, '_> {
                 | InferredTypeData::Union(_)
                 | InferredTypeData::TypeOperator(_)
                 | InferredTypeData::IndexedAccess(_)
+                | InferredTypeData::MappedType(_)
                 | InferredTypeData::MergedReference(_)
                 | InferredTypeData::TypeofExpression(_)
                 | InferredTypeData::TypeofType(_)
@@ -2558,6 +2635,7 @@ impl<'db> ResolutionCtx<'db, '_> {
             InferredTypeData::Unknown => Some(InferredTypeData::Unknown),
             InferredTypeData::Global
             | InferredTypeData::GlobalType(_)
+            | InferredTypeData::GlobalLocal(_)
             | InferredTypeData::Symbol
             | InferredTypeData::Conditional
             | InferredTypeData::Constructor(_)
@@ -2570,6 +2648,7 @@ impl<'db> ResolutionCtx<'db, '_> {
             | InferredTypeData::Union(_)
             | InferredTypeData::TypeOperator(_)
             | InferredTypeData::IndexedAccess(_)
+            | InferredTypeData::MappedType(_)
             | InferredTypeData::MergedReference(_)
             | InferredTypeData::TypeofExpression(_)
             | InferredTypeData::TypeofType(_)
@@ -2588,9 +2667,15 @@ impl<'db> ResolutionCtx<'db, '_> {
     ) -> InferredTypeData<'db> {
         match self.resolve_inferred_type(argument) {
             InferredTypeData::BigInt => InferredTypeData::BigInt,
+            InferredTypeData::Literal(literal)
+                if matches!(literal.literal(self.db), InferredLiteral::BigInt(_)) =>
+            {
+                InferredTypeData::BigInt
+            }
             InferredTypeData::Unknown
             | InferredTypeData::Global
             | InferredTypeData::GlobalType(_)
+            | InferredTypeData::GlobalLocal(_)
             | InferredTypeData::Boolean
             | InferredTypeData::Null
             | InferredTypeData::Number
@@ -2612,6 +2697,7 @@ impl<'db> ResolutionCtx<'db, '_> {
             | InferredTypeData::Union(_)
             | InferredTypeData::TypeOperator(_)
             | InferredTypeData::IndexedAccess(_)
+            | InferredTypeData::MappedType(_)
             | InferredTypeData::Literal(_)
             | InferredTypeData::InstanceOf(_)
             | InferredTypeData::MergedReference(_)
@@ -2657,6 +2743,7 @@ impl<'db> ResolutionCtx<'db, '_> {
             InferredTypeData::Unknown
             | InferredTypeData::Global
             | InferredTypeData::GlobalType(_)
+            | InferredTypeData::GlobalLocal(_)
             | InferredTypeData::Conditional
             | InferredTypeData::Class(_)
             | InferredTypeData::Constructor(_)
@@ -2669,6 +2756,7 @@ impl<'db> ResolutionCtx<'db, '_> {
             | InferredTypeData::Union(_)
             | InferredTypeData::TypeOperator(_)
             | InferredTypeData::IndexedAccess(_)
+            | InferredTypeData::MappedType(_)
             | InferredTypeData::InstanceOf(_)
             | InferredTypeData::MergedReference(_)
             | InferredTypeData::TypeofExpression(_)
@@ -2738,6 +2826,7 @@ impl<'db> ResolutionCtx<'db, '_> {
                     InferredTypeData::Unknown
                     | InferredTypeData::Global
                     | InferredTypeData::GlobalType(_)
+                    | InferredTypeData::GlobalLocal(_)
                     | InferredTypeData::BigInt
                     | InferredTypeData::Boolean
                     | InferredTypeData::Null
@@ -2758,6 +2847,7 @@ impl<'db> ResolutionCtx<'db, '_> {
                     | InferredTypeData::Local(_)
                     | InferredTypeData::TypeOperator(_)
                     | InferredTypeData::IndexedAccess(_)
+                    | InferredTypeData::MappedType(_)
                     | InferredTypeData::Literal(_)
                     | InferredTypeData::AnyKeyword
                     | InferredTypeData::NeverKeyword
@@ -2817,6 +2907,7 @@ impl<'db> ResolutionCtx<'db, '_> {
                     InferredTypeData::Unknown
                     | InferredTypeData::Global
                     | InferredTypeData::GlobalType(_)
+                    | InferredTypeData::GlobalLocal(_)
                     | InferredTypeData::BigInt
                     | InferredTypeData::Boolean
                     | InferredTypeData::Null
@@ -2838,6 +2929,7 @@ impl<'db> ResolutionCtx<'db, '_> {
                     | InferredTypeData::Intersection(_)
                     | InferredTypeData::TypeOperator(_)
                     | InferredTypeData::IndexedAccess(_)
+                    | InferredTypeData::MappedType(_)
                     | InferredTypeData::Literal(_)
                     | InferredTypeData::MergedReference(_)
                     | InferredTypeData::AnyKeyword
@@ -2868,6 +2960,7 @@ impl<'db> ResolutionCtx<'db, '_> {
                 InferredTypeData::Unknown
                 | InferredTypeData::Global
                 | InferredTypeData::GlobalType(_)
+                | InferredTypeData::GlobalLocal(_)
                 | InferredTypeData::Null
                 | InferredTypeData::Symbol
                 | InferredTypeData::Undefined
@@ -2886,6 +2979,7 @@ impl<'db> ResolutionCtx<'db, '_> {
                 | InferredTypeData::Union(_)
                 | InferredTypeData::TypeOperator(_)
                 | InferredTypeData::IndexedAccess(_)
+                | InferredTypeData::MappedType(_)
                 | InferredTypeData::Literal(_)
                 | InferredTypeData::InstanceOf(_)
                 | InferredTypeData::MergedReference(_)
@@ -2913,6 +3007,7 @@ impl<'db> ResolutionCtx<'db, '_> {
                 InferredTypeData::Unknown
                 | InferredTypeData::Global
                 | InferredTypeData::GlobalType(_)
+                | InferredTypeData::GlobalLocal(_)
                 | InferredTypeData::BigInt
                 | InferredTypeData::Null
                 | InferredTypeData::Number
@@ -2934,6 +3029,7 @@ impl<'db> ResolutionCtx<'db, '_> {
                 | InferredTypeData::Union(_)
                 | InferredTypeData::TypeOperator(_)
                 | InferredTypeData::IndexedAccess(_)
+                | InferredTypeData::MappedType(_)
                 | InferredTypeData::Literal(_)
                 | InferredTypeData::InstanceOf(_)
                 | InferredTypeData::MergedReference(_)

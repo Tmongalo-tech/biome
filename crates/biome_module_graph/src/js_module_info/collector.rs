@@ -5,22 +5,24 @@ use biome_js_semantic::{Reference, ScopeId, SemanticModel, TsBindingReference};
 use biome_js_syntax::{
     AnyJsArrowFunctionParameters, AnyJsBindingPattern, AnyJsCombinedSpecifier, AnyJsDeclaration,
     AnyJsExportDefaultDeclaration, AnyJsExpression, AnyJsImportClause, JsArrowFunctionExpression,
-    JsAssignmentExpression, JsForVariableDeclaration, JsFormalParameter, JsRestParameter,
-    JsSyntaxNode, JsVariableDeclaration, TsTypeParameter, inner_string_text,
+    JsAssignmentExpression, JsForVariableDeclaration, JsFormalParameter, JsLanguage,
+    JsRestParameter, JsSyntaxNode, JsVariableDeclaration, TsMappedType, TsModuleDeclaration,
+    TsTypeParameter, inner_string_text,
 };
 use biome_js_type_info::{
     FunctionParameter, FunctionParameterBinding, GenericTypeParameter, RawTypeCollector,
     RawTypeData, RawTypeId, TypeData, TypeId, TypeImportQualifier, TypeMember, TypeMemberKind,
     TypeReference, TypeStore, UnionCollector, resolved::InferredLocalTypeId,
 };
-use biome_rowan::{AstNode, Text, TextRange, TokenText};
+use biome_rowan::{AstNode, SyntaxKindSet, Text, TextRange, TokenText};
 use indexmap::IndexMap;
 use rustc_hash::FxHashMap;
 
 use super::utils::MAX_NUM_TYPES;
 use super::{
     Exports, ImportSymbol, Imports, JsExport, JsImport, JsModuleInfo, JsModuleInfoDiagnostic,
-    JsModuleInfoInner, JsOwnExport, JsReexport, binding::JsBindingData, is_named_type_declaration,
+    JsModuleInfoInner, JsOwnExport, JsReexport, NamespaceMember, binding::JsBindingData,
+    is_named_type_declaration,
 };
 use crate::{ImportPathMap, JsImportKind, JsImportPath, JsImportPhase};
 
@@ -128,7 +130,7 @@ impl JsModuleInfoCollector {
                 .ok()
                 .map(|t| t.token_text_trimmed().into())
                 .unwrap_or_default();
-            let range = binding.syntax().text_trimmed_range();
+            let range = binding.range();
 
             bindings.push(JsBindingData {
                 name,
@@ -155,6 +157,13 @@ impl JsModuleInfoCollector {
             referenced_classes: Vec::new(),
         }
     }
+
+    /// The kinds of the nodes that [Self::leave_node] reads.
+    pub(super) const LEAVE_NODE_KINDS: SyntaxKindSet<JsLanguage> = AnyJsExpression::KIND_SET
+        .union(JsFormalParameter::KIND_SET)
+        .union(JsRestParameter::KIND_SET)
+        .union(JsVariableDeclaration::KIND_SET)
+        .union(biome_js_syntax::JsImport::KIND_SET);
 
     pub fn leave_node(&mut self, node: &JsSyntaxNode) {
         if let Some(expr) = AnyJsExpression::cast_ref(node) {
@@ -539,6 +548,11 @@ impl JsModuleInfoCollector {
                     .unwrap_or_default();
             } else if let Some(param) = TsTypeParameter::cast_ref(&ancestor) {
                 return match GenericTypeParameter::from_ts_type_parameter(self, scope_id, &param) {
+                    Some(generic) => self.reference_to_owned_data(TypeData::from(generic)),
+                    None => TypeReference::unknown(),
+                };
+            } else if let Some(mapped) = TsMappedType::cast_ref(&ancestor) {
+                return match GenericTypeParameter::from_ts_mapped_type(&mapped) {
                     Some(generic) => self.reference_to_owned_data(TypeData::from(generic)),
                     None => TypeReference::unknown(),
                 };
@@ -1006,6 +1020,11 @@ impl JsModuleInfo {
             .collect::<Vec<_>>();
         named_type_ids.sort_unstable();
         named_type_ids.dedup();
+        let namespace_members = collect_namespace_members(
+            &semantic_model,
+            &finalised.raw_types,
+            &finalised.raw_binding_types,
+        );
 
         Self(Arc::new(JsModuleInfoInner {
             static_imports: Imports(collector.static_imports),
@@ -1017,11 +1036,61 @@ impl JsModuleInfo {
             raw_expressions: finalised.raw_expressions,
             raw_binding_types: finalised.raw_binding_types,
             named_type_ids: named_type_ids.into_boxed_slice(),
+            namespace_members,
             diagnostics: collector.diagnostics.into_iter().map(Into::into).collect(),
             infer_types: collector.inference_mode != TypeInferenceMode::Disabled,
             referenced_classes: collector.referenced_classes,
         }))
     }
+}
+
+/// Groups the bindings declared inside each `namespace` or `module`
+/// declaration by the raw type ID of that declaration.
+///
+/// See [`JsModuleInfoInner::namespace_members`] for the ordering contract.
+fn collect_namespace_members(
+    semantic_model: &SemanticModel,
+    raw_types: &[RawTypeData],
+    raw_binding_types: &FxHashMap<TextRange, TypeReference>,
+) -> FxHashMap<TypeId, Box<[NamespaceMember]>> {
+    let mut members = FxHashMap::<TypeId, Vec<NamespaceMember>>::default();
+    for binding in semantic_model.all_bindings() {
+        let Some(TypeReference::Resolved(RawTypeId::Local(type_id))) =
+            raw_binding_types.get(&binding.range())
+        else {
+            continue;
+        };
+        if !matches!(
+            raw_types.get(type_id.index()),
+            Some(RawTypeData::Module(_) | RawTypeData::Namespace(_))
+        ) {
+            continue;
+        }
+        let Some(declaration) = binding
+            .tree()
+            .declaration()
+            .and_then(|declaration| TsModuleDeclaration::cast(declaration.into_syntax()))
+        else {
+            continue;
+        };
+
+        let entry = members.entry(*type_id).or_default();
+        for member in semantic_model.scope(declaration.syntax()).bindings() {
+            let Ok(name) = member.tree().name_token() else {
+                continue;
+            };
+            entry.push(NamespaceMember {
+                name: name.token_text_trimmed().into(),
+                range: member.range(),
+            });
+        }
+    }
+
+    members
+        .into_iter()
+        .filter(|(_, members)| !members.is_empty())
+        .map(|(type_id, members)| (type_id, members.into_boxed_slice()))
+        .collect()
 }
 
 struct FinalisedModuleTypes {

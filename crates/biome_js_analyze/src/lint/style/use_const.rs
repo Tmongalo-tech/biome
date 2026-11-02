@@ -88,7 +88,11 @@ declare_lint_rule! {
         version: "1.0.0",
         name: "useConst",
         language: "js",
-        sources: &[RuleSource::Eslint("prefer-const").same()],
+        sources: &[
+            RuleSource::Eslint("prefer-const").same(),
+            RuleSource::EslintSvelte("prefer-const").same(),
+            RuleSource::DenoLint("prefer-const").same(),
+        ],
         recommended: true,
         severity: Severity::Warning,
         fix_kind: FixKind::Safe,
@@ -154,7 +158,9 @@ impl Rule for UseConst {
             }
         }
 
-        Some(diag)
+        Some(diag.note(markup! {
+            "A variable that is never reassigned is clearer as "<Emphasis>"const"</Emphasis>", because it prevents the binding from being reassigned."
+        }))
     }
 
     fn action(ctx: &RuleContext<Self>, state: &Self::State) -> Option<JsRuleAction> {

@@ -8,47 +8,38 @@ use biome_js_syntax::{
     AnyTsType, AnyTsTypeMember, T, TsMethodSignatureTypeMember, TsPropertySignatureTypeMember,
     TsTypeMemberList,
 };
-use biome_rowan::{AstNode, BatchMutationExt, TriviaPieceKind, declare_node_union};
+use biome_rowan::{AstNode, BatchMutationExt, declare_node_union};
 use biome_rule_options::use_consistent_method_signatures::{
     MethodSignatureStyle, UseConsistentMethodSignaturesOptions,
 };
 
-// TODO: Highlight lines 2-3 and 4-6 of the codeblock if/when the doctest parser learns to ignore such patterns 
+// TODO: Highlight lines 2-3 and 4-6 of the codeblock if/when the doctest parser learns to ignore such patterns
 // ```ts,ignore {2-3, 4,6}
 
 declare_lint_rule! {
-    /// Enforce consistent use of either method signatures or function properties within interfaces and type aliases.
+    /// Enforce one syntax for functions declared in interfaces and type aliases.
     ///
-    /// TypeScript provides 2 different ways to declare methods within interfaces and object types:
+    /// TypeScript supports method syntax and property syntax:
+    ///
     /// ```ts,ignore
     /// interface Example {
-    ///   // method shorthand syntax
-    ///   methodFunc(arg: string): void;
-    ///
-    ///   // regular property with function type
-    ///   prop: (arg: string) => void;
+    ///   method(arg: string): void;
+    ///   property: (arg: string) => void;
     /// }
-    ///
-    /// // These forms correspond to the analogous JS object literal patterns:
-    /// const obj = {
-    ///   methodFunc(arg) {},
-    ///   prop: (arg) => {},
-    /// } satisfies Example;
     /// ```
     ///
-    /// While mostly a matter of stylistic consistency, the two gain subtle differences in behavior when the
-    /// [`strictFunctionTypes`](https://www.typescriptlang.org/tsconfig/#strictFunctionTypes) compiler option is enabled. \
-    /// More specifically, its stricter contravariant checks will **only** apply to functions written in _property_ syntax —
-    /// ones written as methods will remain with the weaker bivariant type checks.
+    /// The two forms can behave differently when the
+    /// [`strictFunctionTypes`](https://www.typescriptlang.org/tsconfig/#strictFunctionTypes)
+    /// compiler option is enabled. Function properties receive stricter parameter checks, while
+    /// methods keep TypeScript's more permissive compatibility behavior.
     ///
-    /// <details>
-    /// <summary>What's the difference?</summary>
+    /// In this example, callers of `Emitter` may pass any `Event`. Narrowing the property parameter
+    /// to `SpecialEvent` is therefore rejected, while TypeScript still accepts the method form:
     ///
-    /// To illustrate the differences between method bivariance and contravariance, consider the following snippet of code:
     /// ```ts,ignore
     /// interface Emitter {
-    ///   methodFunc(arg: Event): void;
-    ///   propFunc: (arg: Event) => void;
+    ///   method(arg: Event): void;
+    ///   property: (arg: Event) => void;
     /// }
     ///
     /// interface SpecialEvent extends Event {
@@ -56,30 +47,28 @@ declare_lint_rule! {
     /// }
     ///
     /// interface SpecialEmitter extends Emitter {
-    ///   methodFunc(arg: SpecialEvent): void; // OK
-    ///   propFunc: (arg: SpecialEvent) => void; // Error under `strictFunctionTypes`
+    ///   method(arg: SpecialEvent): void;
+    ///   property: (arg: SpecialEvent) => void; // Error with `strictFunctionTypes`
     /// }
     /// ```
-    /// In the above example, `SpecialEmitter.methodFunc` is compatible with `Emitter.methodFunc` under _bivariant_[^1] checks,
-    /// as `SpecialEvent` is assignable to `Event` (i.e. all `SpecialEvent`s are guaranteed to be valid `Event`s). \
-    /// On the other hand, the strict _contravariant_ checks for function properties produce errors on `propFunc` as the reverse is not guaranteed —
-    /// `Event` is not assignable to `SpecialEvent` (i.e. not all `Event`s are guaranteed to be valid `SpecialEvent`s).
     ///
-    /// The full rationale for this behavior can be found in the [TypeScript handbook](https://www.typescriptlang.org/docs/handbook/type-compatibility.html#function-parameter-bivariance).
+    /// <details>
+    /// <summary>Type-system terminology</summary>
     ///
-    /// [^1]: From a purely type-theoretical perspective, bivariance technically refers to a type being _both_ covariant _and_ contravariant at once
-    /// (`A` ⊆ `B` implies `T<A>` ≣ `T<B>`). \
-    /// In practice, this is only true for pathological types like `type T<A> = number`,
-    /// and so is often used to refer to a type being either covariant _or_ contravariant (which simply requires `T<A>` and `T<B>` to have some non-zero amount of overlap).
+    /// With `strictFunctionTypes`, function properties check parameters *contravariantly*: a
+    /// replacement function must accept every value accepted by the original function. Methods use
+    /// TypeScript's more permissive *bivariant* parameter checking, which allows the narrower
+    /// `SpecialEvent` parameter above. See the
+    /// [TypeScript handbook](https://www.typescriptlang.org/docs/handbook/type-compatibility.html#function-parameter-bivariance)
+    /// for the formal rationale.
     ///
     /// </details>
     ///
-    /// To avoid inconsistent type assignability issues and enforce stylistic consistency, this rule attempts to
-    /// ensure either method- or property-style declarations are used consistently across a given codebase.
+    /// Using one form consistently avoids unexpected differences in type checking.
     ///
     /// :::info
-    /// Without `strictFunctionTypes` enabled, method signatures and function properties become **functionally identical**.
-    /// In this case, which option to use simply becomes a matter of personal preference.
+    /// Without `strictFunctionTypes`, the two forms have the same parameter-checking behavior, so
+    /// the choice is only stylistic.
     /// :::
     ///
     /// ## Examples
@@ -150,7 +139,8 @@ declare_lint_rule! {
     /// The desired method signature style to enforce. \
     /// Possible values are either `"method"` or `"property"`.
     ///
-    /// Default: `"property"`[^2]
+    /// Default: `"property"`, which enables stricter parameter checking with
+    /// `strictFunctionTypes`.
     ///
     /// #### Examples for `"style": "method"`
     ///
@@ -179,8 +169,6 @@ declare_lint_rule! {
     ///   flubber(arg: number): number;
     /// }
     /// ```
-    ///
-    /// [^2]: Chosen to allow stricter type checks under the aforementioned `strictFunctionTypes`.
     pub UseConsistentMethodSignatures {
         version: "2.3.14",
         name: "useConsistentMethodSignatures",
@@ -250,10 +238,7 @@ impl Rule for UseConsistentMethodSignatures {
         Some(diagnostic)
     }
 
-    fn action(
-        ctx: &RuleContext<Self>,
-        state: &Self::State,
-    ) -> Option<JsRuleAction> {
+    fn action(ctx: &RuleContext<Self>, state: &Self::State) -> Option<JsRuleAction> {
         let node = ctx.query();
         let mut mutation = ctx.root().begin();
 
@@ -291,9 +276,7 @@ impl Rule for UseConsistentMethodSignatures {
 /// Returns `None` if:
 /// - The method has no explicit return type annotation (can't build a valid function type).
 /// - The method is one of several overloads (would need intersection types — handled separately).
-fn method_to_property(
-    node: &TsMethodSignatureTypeMember,
-) -> Option<TsPropertySignatureTypeMember> {
+fn method_to_property(node: &TsMethodSignatureTypeMember) -> Option<TsPropertySignatureTypeMember> {
     let return_type_annotation = node.return_type_annotation()?;
 
     if has_method_overloads(node) {
@@ -307,25 +290,25 @@ fn method_to_property(
     let parameters = make::js_parameters(
         orig_params.l_paren_token().ok()?,
         orig_params.items(),
-        make::token(T![')']).with_trailing_trivia([(TriviaPieceKind::Whitespace, " ")]),
+        make::token(T![')']).with_trailing_space(),
     );
     let return_type = return_type_annotation.ty().ok()?;
 
     let function_type = make::ts_function_type(
         parameters,
-        make::token(T![=>]).with_trailing_trivia([(TriviaPieceKind::Whitespace, " ")]),
+        make::token(T![=>]).with_trailing_space(),
         return_type,
     )
     .build()
     .with_type_parameters(node.type_parameters());
 
     let type_annotation = make::ts_type_annotation(
-        make::token(T![:]).with_trailing_trivia([(TriviaPieceKind::Whitespace, " ")]),
+        make::token(T![:]).with_trailing_space(),
         AnyTsType::from(function_type),
     );
 
-    let mut builder = make::ts_property_signature_type_member(name)
-        .with_type_annotation(type_annotation);
+    let mut builder =
+        make::ts_property_signature_type_member(name).with_type_annotation(type_annotation);
 
     if let Some(opt) = node.optional_token() {
         builder = builder.with_optional_token(opt);
@@ -340,9 +323,7 @@ fn method_to_property(
 /// Converts a property-style signature into a method-style one.
 ///
 /// Returns `None` if the property has a `readonly` modifier (methods can't be readonly).
-fn property_to_method(
-    node: &TsPropertySignatureTypeMember,
-) -> Option<TsMethodSignatureTypeMember> {
+fn property_to_method(node: &TsPropertySignatureTypeMember) -> Option<TsMethodSignatureTypeMember> {
     if node.readonly_token().is_some() {
         return None;
     }
@@ -362,10 +343,8 @@ fn property_to_method(
     );
     let return_type = function_type.return_type().ok()?;
 
-    let return_type_annotation = make::ts_return_type_annotation(
-        make::token(T![:]).with_trailing_trivia([(TriviaPieceKind::Whitespace, " ")]),
-        return_type,
-    );
+    let return_type_annotation =
+        make::ts_return_type_annotation(make::token(T![:]).with_trailing_space(), return_type);
 
     let mut builder = make::ts_method_signature_type_member(name, parameters)
         .with_return_type_annotation(return_type_annotation);
@@ -396,7 +375,12 @@ fn check_method_overloads(node: &TsMethodSignatureTypeMember) -> Option<bool> {
     let overload_count = member_list
         .into_iter()
         .filter_map(|m| m.as_ts_method_signature_type_member().cloned())
-        .filter(|m| m.name().ok().and_then(|n| n.name()).is_some_and(|n| n == name_text))
+        .filter(|m| {
+            m.name()
+                .ok()
+                .and_then(|n| n.name())
+                .is_some_and(|n| n == name_text)
+        })
         .count();
 
     Some(overload_count > 1)

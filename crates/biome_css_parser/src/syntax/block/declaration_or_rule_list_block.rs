@@ -1,4 +1,5 @@
 use crate::parser::CssParser;
+use crate::syntax::at_rule::keyframes::parse_scss_template_keyframes_item;
 use crate::syntax::at_rule::{is_at_at_rule, parse_at_rule};
 use crate::syntax::block::ParseBlockBody;
 use crate::syntax::declaration::parse_declaration_with_semicolon;
@@ -44,8 +45,9 @@ impl ParseBlockBody for DeclarationOrRuleListBlock {
 }
 
 #[inline]
-fn is_at_declaration_or_rule_item(p: &mut CssParser) -> bool {
-    is_at_at_rule(p)
+pub(crate) fn is_at_declaration_or_rule_item(p: &mut CssParser) -> bool {
+    p.at(CSS_PERCENTAGE_VALUE)
+        || is_at_at_rule(p)
         || is_at_top_level_qualified_rule(p)
         || is_at_nested_qualified_rule(p)
         || is_at_scss_nesting_declaration(p)
@@ -104,6 +106,55 @@ fn parse_exclusive_scss_interpolated_block_item(
     )
 }
 
+/// Parses a block item that starts with a Grit metavariable.
+///
+/// The metavariable starts a nested qualified rule if its selector stays on
+/// the same line, and is a standalone item otherwise:
+///
+/// ```css
+/// .parent {
+///     ${selector} {}
+///     ${mixin}
+///     .child {}
+/// }
+/// ```
+#[inline]
+fn parse_metavariable_block_item(p: &mut CssParser) -> ParsedSyntax {
+    // The rule must reach its own closing brace, also at the root of a styled
+    // snippet, whose list ends at the end of the file.
+    if is_at_single_line_selector(p)
+        && let Ok(rule) = try_parse_nested_qualified_rule_without_selector_recovery(p, T!['}'])
+    {
+        return rule;
+    }
+
+    parse_metavariable(p)
+}
+
+/// The number of tokens [is_at_single_line_selector] looks ahead for the `{`.
+const MAX_SELECTOR_LOOKAHEAD: usize = 64;
+
+/// Returns `true` if the tokens up to the next `{` stay on the same line,
+/// except after the commas between the selectors of a list:
+///
+/// ```css
+/// ${first},
+/// ${second} {}
+/// ```
+fn is_at_single_line_selector(p: &mut CssParser) -> bool {
+    for n in 1..=MAX_SELECTOR_LOOKAHEAD {
+        match p.nth(n) {
+            T!['{'] => return true,
+            T![;] | T!['}'] | EOF => return false,
+            _ if p.has_nth_preceding_line_break(n) && !p.nth_at(n - 1, T![,]) => return false,
+            _ => {}
+        }
+    }
+
+    // Leave the decision to the speculative parse for longer selectors.
+    true
+}
+
 struct DeclarationOrRuleListParseRecovery {
     end_kind: CssSyntaxKind,
 }
@@ -140,6 +191,18 @@ impl ParseNodeList for DeclarationOrRuleList {
     const LIST_KIND: Self::Kind = CSS_DECLARATION_OR_RULE_LIST;
 
     fn parse_element(&mut self, p: &mut Self::Parser<'_>) -> ParsedSyntax {
+        if let ParsedSyntax::Present(item) = CssSyntaxFeatures::Scss
+            .parse_exclusive_syntax_with_kind(
+                p,
+                parse_scss_template_keyframes_item,
+                |p, marker| scss_only_syntax_error(p, "SCSS keyframe blocks", marker.range(p)),
+                // The default CSS_BOGUS_KEYFRAMES_ITEM is not allowed in this list.
+                Some(CSS_BOGUS),
+            )
+        {
+            return ParsedSyntax::Present(item);
+        }
+
         if is_at_at_rule(p) {
             parse_at_rule(p)
         } else if CssSyntaxFeatures::Scss.is_supported(p) && is_at_scss_nesting_declaration(p) {
@@ -281,10 +344,10 @@ impl ParseNodeList for DeclarationOrRuleList {
             // fall back to parsing the block as a declaration,
             // because declaration error is more relevant.
             parse_any_declaration_with_semicolon(p)
+        } else if is_at_metavariable(p) {
+            parse_metavariable_block_item(p)
         } else if is_at_nested_qualified_rule(p) {
             parse_nested_qualified_rule(p)
-        } else if is_at_metavariable(p) {
-            parse_metavariable(p)
         } else {
             Absent
         }

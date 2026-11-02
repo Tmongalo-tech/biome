@@ -16,24 +16,26 @@
 //! evaluator, which keeps the declaration graph intact across module
 //! boundaries without recursing through it on the Rust stack.
 
-use super::{BindingTypeData, InferredModuleTypes, globals::global_type};
+use super::{BindingTypeData, InferredModuleTypes, globals::global_type, lookup::MemberLookupMode};
 use crate::db::queries::{
     LocalTypeInput, infer_local_type, infer_module_types, infer_module_types_from_tables,
     inference_module_sccs,
 };
 use crate::module_graph::{ModuleInfo, ModuleInfoKind};
 use crate::{JsModuleInfo, ModuleDb, ModuleGraphGeneration, module_for_key};
-use biome_js_syntax::TsModuleDeclaration;
 use biome_js_type_info::{
-    GlobalTypeId, RawTypeData, ResolvedTypeId, ScopeId, TypeId, TypeReference,
-    TypeReferenceQualifier, TypeResolverLevel,
+    GlobalTypeId, RawTypeData, ResolvedTypeId, ScopeId, Tuple as RawTuple, TypeId, TypeOperator,
+    TypeReference, TypeReferenceQualifier, TypeResolverLevel,
+    TypeofExpression as RawTypeofExpression,
     interned_types::{
-        InternedModule as InferredModule, InternedNamespace as InferredNamespace,
-        InternedTypeofValue, LocalTypeHandle, LocalTypeId, ModuleKey, TypeData as InferredTypeData,
+        InternedMappedType as InferredMappedType, InternedModule as InferredModule,
+        InternedNamespace as InferredNamespace, InternedTypeofValue, Literal as InferredLiteral,
+        LocalTypeHandle, LocalTypeId, ModuleKey, TypeData as InferredTypeData,
         TypeMember as InferredTypeMember, TypeMemberKind as InferredTypeMemberKind,
+        TypeSubstitution as InferredTypeSubstitution,
     },
 };
-use biome_rowan::{AstNode, Text, TextRange};
+use biome_rowan::{Text, TextRange};
 use rustc_hash::{FxHashMap, FxHashSet};
 use salsa::plumbing::AsId;
 use std::{
@@ -49,6 +51,10 @@ use std::{
 pub(super) const MAX_RAW_TYPE_RESOLUTION_DEPTH: usize = 64;
 pub(super) const MAX_ON_DEMAND_IMPORT_DEPTH: u8 = 128;
 const MAX_INFERRED_EXPRESSION_WRAPPER_STEPS: usize = 64;
+// Bounds nested rest elements followed when spreading a tuple.
+const MAX_SPREAD_ELEMENT_DEPTH: usize = 16;
+// Bounds nested conditional expressions checked for fresh literal branches.
+const MAX_FRESH_LITERAL_DEPTH: usize = 16;
 const MAX_LOCAL_TYPE_RESOLUTION_STEPS: usize = 1024;
 // Bounds retries when resolving a dynamically discovered declaration graph.
 // The graph itself is stored on the heap, so this is a work limit rather than
@@ -217,6 +223,22 @@ pub(in crate::db) struct ResolutionCtx<'db, 'a> {
     pub(in crate::db::type_inference) resolution_depth: Cell<usize>,
     encountered_inference_cycle: Cell<bool>,
     on_demand_declarations: Option<SharedOnDemandDeclarationEvaluator<'db>>,
+    /// Mapped types evaluated during member lookup, keyed by the mapped type
+    /// and the substitutions applied to it. Repeated member reads on the same
+    /// instance reuse the evaluated object.
+    pub(in crate::db::type_inference) mapped_types: FxHashMap<
+        (InferredMappedType<'db>, Vec<InferredTypeSubstitution<'db>>),
+        Option<InferredTypeData<'db>>,
+    >,
+    /// Counts reads of types whose resolution is still in progress. A result
+    /// computed while this count grows may be less precise than a later one,
+    /// so it is not cached.
+    pub(in crate::db::type_inference) in_progress_reads: Cell<usize>,
+    /// Member lookups performed by this context, keyed by the resolved type,
+    /// the member name, and the lookup mode. Expressions such as `ctx.db`
+    /// often repeat the same lookup many times in one module.
+    pub(in crate::db::type_inference) member_lookups:
+        FxHashMap<(InferredTypeData<'db>, Text, MemberLookupMode), Option<InferredTypeData<'db>>>,
 }
 
 pub(in crate::db) fn resolve_raw_types<'db>(
@@ -287,6 +309,9 @@ impl<'db, 'a> ResolutionCtx<'db, 'a> {
             resolution_depth: Cell::new(0),
             encountered_inference_cycle: Cell::new(false),
             on_demand_declarations,
+            mapped_types: FxHashMap::default(),
+            in_progress_reads: Cell::new(0),
+            member_lookups: FxHashMap::default(),
         }
     }
 
@@ -737,6 +762,7 @@ impl<'db, 'a> ResolutionCtx<'db, 'a> {
             // A resolution cycle keeps the reference symbolic: lookups that
             // are aware of in-progress types can still read the raw
             // declaration behind the handle, which `Unknown` would rule out.
+            self.in_progress_reads.set(self.in_progress_reads.get() + 1);
             return self.local_type(type_id);
         }
 
@@ -770,49 +796,22 @@ impl<'db, 'a> ResolutionCtx<'db, 'a> {
             _ => return fallback,
         };
         let resolves_declarations_directly = self.resolves_declarations_directly();
-        let members = self
-            .js_info
-            .semantic_model
-            .all_bindings()
-            .filter_map(|binding| {
-                let reference = self
-                    .js_info
-                    .raw_binding_types
-                    .get(&binding.syntax().text_trimmed_range())?;
-                if !matches!(
-                    reference,
-                    TypeReference::Resolved(id)
-                        if id.level() == TypeResolverLevel::Thin && id.id() == type_id
-                ) {
-                    return None;
-                }
-                let declaration = binding.tree().declaration()?;
-                TsModuleDeclaration::cast(declaration.syntax().clone())
-            })
-            .flat_map(|declaration| {
-                self.js_info
-                    .semantic_model
-                    .scope(declaration.syntax())
-                    .bindings()
-            })
-            .filter_map(|binding| {
-                let name = binding
-                    .tree()
-                    .name_token()
-                    .ok()?
-                    .token_text_trimmed()
-                    .into();
-                let range = binding.syntax().text_trimmed_range();
-                let reference = self.js_info.raw_binding_types.get(&range)?.clone();
-                Some((name, range, reference))
-            })
-            .map(|(name, range, reference)| InferredTypeMember {
-                kind: InferredTypeMemberKind::NamedStatic(name),
-                ty: if resolves_declarations_directly {
-                    self.resolve_local_binding(range)
-                } else {
-                    self.resolve(&reference)
-                },
+        let js_info = self.js_info;
+        let members = js_info
+            .namespace_members
+            .get(&type_id)
+            .into_iter()
+            .flatten()
+            .filter_map(|member| {
+                let reference = js_info.raw_binding_types.get(&member.range)?;
+                Some(InferredTypeMember {
+                    kind: InferredTypeMemberKind::NamedStatic(member.name.clone()),
+                    ty: if resolves_declarations_directly {
+                        self.resolve_local_binding(member.range)
+                    } else {
+                        self.resolve(reference)
+                    },
+                })
             })
             .collect::<Box<[_]>>();
 
@@ -850,11 +849,155 @@ impl<'db, 'a> ResolutionCtx<'db, 'a> {
             ));
         }
 
+        if let RawTypeData::Tuple(tuple) = raw
+            && tuple.is_inferred_array
+        {
+            return self.resolve_inferred_array(tuple);
+        }
+
         let db = self.db;
         let ty = InferredTypeData::from_raw_with_resolver(db, raw, false, &mut |reference| {
             self.resolve(reference)
         });
         self.resolve_inferred_expression_wrappers(ty)
+    }
+
+    /// Resolves an array expression outside a tuple context to `Array<T>`,
+    /// where `T` is the union of its element types, as TypeScript does. Fresh
+    /// literal elements are widened to their primitive types, while declared
+    /// literal types and spread elements keep their types:
+    ///
+    /// ```ts
+    /// declare const dir: "asc" | "desc";
+    /// const values = [1, dir, ...([true] as const)]; // (number | "asc" | "desc" | true)[]
+    /// ```
+    ///
+    /// An empty array expression resolves to `unknown[]`, because TypeScript
+    /// derives the element type of `const items = [];` from later writes, which
+    /// are not tracked here.
+    fn resolve_inferred_array(&mut self, tuple: &RawTuple) -> InferredTypeData<'db> {
+        let mut element_types = Vec::with_capacity(tuple.elements().len());
+        for element in tuple.elements() {
+            let ty = self.resolve(&element.ty);
+            element_types.push(if element.is_rest {
+                self.resolve_spread_element_type(ty, MAX_SPREAD_ELEMENT_DEPTH)
+            } else if self.is_fresh_literal(&element.ty, MAX_FRESH_LITERAL_DEPTH) {
+                self.widen_literal_type(ty)
+            } else {
+                ty
+            });
+        }
+        let element_type = if element_types.is_empty() {
+            InferredTypeData::Unknown
+        } else {
+            InferredTypeData::union_from_types(self.db, element_types)
+        };
+        InferredTypeData::array_instance(self.db, Box::new([element_type]))
+    }
+
+    /// Returns whether `reference` is the type of a literal expression, such as
+    /// `1`, `-1`, or `"a"`, or a conditional expression choosing between such
+    /// expressions. TypeScript widens these fresh literal types in mutable
+    /// locations.
+    fn is_fresh_literal(&self, reference: &TypeReference, depth: usize) -> bool {
+        let TypeReference::Resolved(id) = reference else {
+            return false;
+        };
+        if depth == 0
+            || id.level() != TypeResolverLevel::Thin
+            || self.js_info.is_named_type(id.id())
+        {
+            return false;
+        }
+        let Some(raw) = self.js_info.raw_types.get(id.id().index()) else {
+            return false;
+        };
+        if matches!(raw, RawTypeData::Literal(_)) {
+            return true;
+        }
+        let RawTypeData::TypeofExpression(expression) = raw else {
+            return false;
+        };
+        if let RawTypeofExpression::UnaryMinus(unary) = expression.as_ref() {
+            return unary.is_literal_argument;
+        }
+        if let RawTypeofExpression::Conditional(conditional) = expression.as_ref() {
+            return self.is_fresh_literal(&conditional.consequent, depth - 1)
+                && self.is_fresh_literal(&conditional.alternate, depth - 1);
+        }
+        false
+    }
+
+    /// Returns the type of the elements produced by spreading a value of type
+    /// `ty` into an array expression, or `Unknown` for iterables other than
+    /// arrays, tuples, and strings.
+    fn resolve_spread_element_type(
+        &mut self,
+        ty: InferredTypeData<'db>,
+        depth: usize,
+    ) -> InferredTypeData<'db> {
+        if depth == 0 {
+            return InferredTypeData::Unknown;
+        }
+        let mut ty = self.resolve_inferred_type(ty);
+        if let InferredTypeData::TypeOperator(operator) = ty
+            && operator.operator(self.db) == TypeOperator::Readonly
+        {
+            ty = self.resolve_inferred_type(operator.ty(self.db));
+        }
+        if let InferredTypeData::InstanceOf(instance) = ty
+            && self
+                .resolve_inferred_type(instance.ty(self.db))
+                .is_array_class(self.db)
+        {
+            return instance
+                .type_parameters(self.db)
+                .first()
+                .copied()
+                .unwrap_or(InferredTypeData::Unknown);
+        }
+        if let InferredTypeData::Tuple(tuple) = ty {
+            let mut types = Vec::with_capacity(tuple.elements(self.db).len());
+            for element in tuple.elements(self.db) {
+                types.push(if element.is_rest {
+                    self.resolve_spread_element_type(element.ty, depth - 1)
+                } else {
+                    element.ty
+                });
+            }
+            return InferredTypeData::union_from_types(self.db, types);
+        }
+        let is_string = ty == InferredTypeData::String
+            || matches!(
+                ty,
+                InferredTypeData::Literal(literal) if matches!(
+                    literal.literal(self.db),
+                    InferredLiteral::String(_) | InferredLiteral::Template(_)
+                )
+            );
+        if is_string {
+            InferredTypeData::String
+        } else {
+            InferredTypeData::Unknown
+        }
+    }
+
+    /// Widens primitive literal types, including literals in a union, to their
+    /// primitive types. Other types are returned unchanged.
+    fn widen_literal_type(&mut self, ty: InferredTypeData<'db>) -> InferredTypeData<'db> {
+        let resolved = self.resolve_inferred_type(ty);
+        if let InferredTypeData::Union(union) = resolved {
+            let types = union
+                .types(self.db)
+                .iter()
+                .map(|variant| {
+                    let resolved = self.resolve_inferred_type(*variant);
+                    widen_literal(self.db, resolved).unwrap_or(*variant)
+                })
+                .collect();
+            return InferredTypeData::union_from_types(self.db, types);
+        }
+        widen_literal(self.db, resolved).unwrap_or(ty)
     }
 
     fn resolve_inferred_expression_wrappers(
@@ -892,6 +1035,7 @@ impl<'db, 'a> ResolutionCtx<'db, 'a> {
                 InferredTypeData::Unknown
                 | InferredTypeData::Global
                 | InferredTypeData::GlobalType(_)
+                | InferredTypeData::GlobalLocal(_)
                 | InferredTypeData::BigInt
                 | InferredTypeData::Boolean
                 | InferredTypeData::Null
@@ -914,6 +1058,7 @@ impl<'db, 'a> ResolutionCtx<'db, 'a> {
                 | InferredTypeData::Union(_)
                 | InferredTypeData::TypeOperator(_)
                 | InferredTypeData::IndexedAccess(_)
+                | InferredTypeData::MappedType(_)
                 | InferredTypeData::Literal(_)
                 | InferredTypeData::MergedReference(_)
                 | InferredTypeData::TypeofType(_)
@@ -937,6 +1082,7 @@ impl<'db, 'a> ResolutionCtx<'db, 'a> {
         let mut seen = FxHashSet::default();
 
         for _ in 0..MAX_LOCAL_TYPE_RESOLUTION_STEPS {
+            ty = ty.expand_global_local(self.db);
             let InferredTypeData::Local(local) = ty else {
                 return ty;
             };
@@ -960,5 +1106,23 @@ impl<'db, 'a> ResolutionCtx<'db, 'a> {
         }
 
         ty
+    }
+}
+
+/// Returns the primitive type of a primitive literal type, or `None` for other
+/// types, including object and regular expression literals.
+fn widen_literal<'db>(
+    db: &'db dyn ModuleDb,
+    ty: InferredTypeData<'db>,
+) -> Option<InferredTypeData<'db>> {
+    let InferredTypeData::Literal(literal) = ty else {
+        return None;
+    };
+    match literal.literal(db) {
+        InferredLiteral::BigInt(_) => Some(InferredTypeData::BigInt),
+        InferredLiteral::Boolean(_) => Some(InferredTypeData::Boolean),
+        InferredLiteral::Number(_) => Some(InferredTypeData::Number),
+        InferredLiteral::String(_) | InferredLiteral::Template(_) => Some(InferredTypeData::String),
+        InferredLiteral::Object(_) | InferredLiteral::RegExp(_) => None,
     }
 }

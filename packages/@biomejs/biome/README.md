@@ -1,18 +1,19 @@
 <div align="center">
   <picture>
-    <source media="(prefers-color-scheme: dark)" srcset="https://raw.githubusercontent.com/biomejs/resources/main/svg/slogan-dark-transparent.svg">
-    <source media="(prefers-color-scheme: light)" srcset="https://raw.githubusercontent.com/biomejs/resources/main/svg/slogan-light-transparent.svg">
-    <img alt="Shows the banner of Biome, with its logo and the phrase 'Biome - Toolchain of the web'." src="https://raw.githubusercontent.com/biomejs/resources/main/svg/slogan-light-transparent.svg" width="700">
+    <source media="(prefers-color-scheme: dark)" srcset="https://raw.githubusercontent.com/biomejs/resources/main/svg/slogan-dark-transparent.svg" />
+    <source media="(prefers-color-scheme: light)" srcset="https://raw.githubusercontent.com/biomejs/resources/main/svg/slogan-light-transparent.svg" />
+    <img alt="Shows the banner of Biome, with its logo and the phrase 'Biome - Toolchain of the web'." src="https://raw.githubusercontent.com/biomejs/resources/main/svg/slogan-light-transparent.svg" width="700" />
   </picture>
+</div>
 
   <br>
   <br>
 
-  [![CI on main][ci-badge]][ci-url]
-  [![Discord chat][discord-badge]][discord-url]
-  [![npm version][npm-badge]][npm-url]
-  [![VSCode version][vscode-badge]][vscode-url]
-  [![Open VSX version][open-vsx-badge]][open-vsx-url]
+[![CI on main][ci-badge]][ci-url]
+[![Discord chat][discord-badge]][discord-url]
+[![npm version][npm-badge]][npm-url]
+[![VSCode version][vscode-badge]][vscode-url]
+[![Open VSX version][open-vsx-badge]][open-vsx-url]
 
   [ci-badge]: https://github.com/biomejs/biome/actions/workflows/main.yml/badge.svg
   [ci-url]: https://github.com/biomejs/biome/actions/workflows/main.yml
@@ -29,16 +30,14 @@
      For example given below is the same order as these files appear on page:
      https://github.com/biomejs/biome/tree/main/packages/@biomejs/biome -->
 
-  [हिन्दी](https://github.com/biomejs/biome/blob/main/packages/%40biomejs/biome/README.hi.md) | English | [Español](https://github.com/biomejs/biome/blob/main/packages/%40biomejs/biome/README.es.md) | [Français](https://github.com/biomejs/biome/blob/main/packages/%40biomejs/biome/README.fr.md) | [繁體中文](https://github.com/biomejs/biome/blob/main/packages/%40biomejs/biome/README.zh-TW.md) | [简体中文](https://github.com/biomejs/biome/blob/main/packages/%40biomejs/biome/README.zh-CN.md) | [日本語](https://github.com/biomejs/biome/blob/main/packages/%40biomejs/biome/README.ja.md) | [Polski](https://github.com/biomejs/biome/blob/main/packages/%40biomejs/biome/README.pl.md) | [Português do Brasil](https://github.com/biomejs/biome/blob/main/packages/%40biomejs/biome/README.pt-BR.md) | [한국어](https://github.com/biomejs/biome/blob/main/packages/%40biomejs/biome/README.kr.md) | [Русский](https://github.com/biomejs/biome/blob/main/packages/%40biomejs/biome/README.ru.md) | [Українська](https://github.com/biomejs/biome/blob/main/packages/%40biomejs/biome/README.uk.md)
-</div>
-
+[हिन्दी](https://github.com/biomejs/biome/blob/main/packages/%40biomejs/biome/README.hi.md) | English | [Español](https://github.com/biomejs/biome/blob/main/packages/%40biomejs/biome/README.es.md) | [Français](https://github.com/biomejs/biome/blob/main/packages/%40biomejs/biome/README.fr.md) | [繁體中文](https://github.com/biomejs/biome/blob/main/packages/%40biomejs/biome/README.zh-TW.md) | [简体中文](https://github.com/biomejs/biome/blob/main/packages/%40biomejs/biome/README.zh-CN.md) | [日本語](https://github.com/biomejs/biome/blob/main/packages/%40biomejs/biome/README.ja.md) | [Polski](https://github.com/biomejs/biome/blob/main/packages/%40biomejs/biome/README.pl.md) | [Português do Brasil](https://github.com/biomejs/biome/blob/main/packages/%40biomejs/biome/README.pt-BR.md) | [한국어](https://github.com/biomejs/biome/blob/main/packages/%40biomejs/biome/README.kr.md) | [Русский](https://github.com/biomejs/biome/blob/main/packages/%40biomejs/biome/README.ru.md) | [Українська](https://github.com/biomejs/biome/blob/main/packages/%40biomejs/biome/README.uk.md)
 <br>
 
 **Biome** is a performant toolchain for web projects, it aims to provide developer tools to maintain the health of said projects.
 
-**Biome is a [fast formatter](https://github.com/biomejs/benchmark#formatting)** for _JavaScript_, _TypeScript_, _JSX_, _JSON_, _CSS_ and _GraphQL_ that scores **[97% compatibility with _Prettier_](https://algora.io/challenges/prettier)**.
+**Biome is a [fast formatter](https://github.com/biomejs/benchmark#formatting)** for _JavaScript_, _TypeScript_, _JSX_, _JSON_, _CSS_, _GraphQL_, _Markdown_, _YAML_, and _SCSS_ that scores **[97% compatibility with _Prettier_](https://algora.io/challenges/prettier)**.
 
-**Biome is a [performant linter](https://github.com/biomejs/benchmark#linting)** for _JavaScript_, _TypeScript_, _JSX_, _JSON_, _CSS_, and _GraphQL_ that features **[more than 500 rules](https://biomejs.dev/linter/javascript/rules/)** from ESLint, typescript-eslint, and [other sources](https://github.com/biomejs/biome/discussions/3).
+**Biome is a [performant linter](https://github.com/biomejs/benchmark#linting)** for _JavaScript_, _TypeScript_, _JSX_, _JSON_, _CSS_, _GraphQL_, _Markdown_, _YAML_, and _SCSS_ that features **[more than 500 rules](https://biomejs.dev/linter/javascript/rules/)** from ESLint, typescript-eslint, and [other sources](https://github.com/biomejs/biome/discussions/3).
 It **outputs detailed and contextualized diagnostics** that help you to improve your code and become a better programmer!
 
 **Biome** is designed from the start to be used [interactively within an editor](https://biomejs.dev/editors/first-party-extensions/).
@@ -83,7 +82,7 @@ or directly head to the [Getting Started guide][getting-started] to start using 
 
 **Biome** has first-class LSP support, with a sophisticated parser that represents the source text in full fidelity and top-notch error recovery.
 
-**Biome** wants to offer a high-quality *Developer Experience*, with descriptive diagnostics and great performance.
+**Biome** wants to offer a high-quality _Developer Experience_, with descriptive diagnostics and great performance.
 
 **Biome** unifies functionalities that have previously been separate tools. Building upon a shared base allows us to provide a cohesive experience for processing code, displaying errors, parallelize work, caching, and configuration.
 
@@ -129,11 +128,11 @@ Biome offers [enterprise support](https://biomejs.dev/enterprise), where Core Co
   <tbody>
     <tr>
       <td align="center" valign="middle">
-        <a href="https://codspeed.io/?utm_source=biome&utm_medium=readme" target="_blank">
+        <a href="https://codspeed.io/?utm_source=oss-sponsorship&utm_medium=biome" target="_blank">
           <picture>
-            <source media="(prefers-color-scheme: light)" srcset="https://biomejs.dev/_astro/codspeed-logo-light.NPF02X9E.svg" />
-            <source media="(prefers-color-scheme: dark)" srcset="https://biomejs.dev/_astro/codspeed-logo-dark.DqfyMRf2.svg" />
-            <img src="https://biomejs.dev/_astro/codspeed-logo-light.NPF02X9E.svg" width="300" alt="CodSpeed logo" />
+            <source media="(prefers-color-scheme: dark)" srcset="https://codspeed.io/codspeed-logo-dark.svg">
+            <source media="(prefers-color-scheme: light)" srcset="https://codspeed.io/codspeed-logo-light.svg">
+            <img alt="CodSpeed logo" src="https://codspeed.io/codspeed-logo-light.svg" width="300">
           </picture>
         </a>
       </td>
@@ -152,6 +151,9 @@ Biome offers [enterprise support](https://biomejs.dev/enterprise), where Core Co
       <td align="center" valign="middle">
         <a href="https://www.cloudflare.com/?utm_source=biome&utm_medium=readme" target="_blank"><img src="https://avatars.githubusercontent.com/u/314135?s=200&v=4" height="100" alt="Cloudflare logo"></a>
       </td>
+      <td align="center" valign="middle">
+        <a href="https://github.com/syntaxfm" target="_blank"><img src="https://avatars.githubusercontent.com/u/130389858?s=200&v=4" height="100" alt="SyntaxFM logo"></a>
+      </td>
     </tr>
   </tbody>
 </table>
@@ -166,9 +168,6 @@ Biome offers [enterprise support](https://biomejs.dev/enterprise), where Core Co
       </td>
       <td align="center" valign="middle">
         <a href="http://rstudio.org/?utm_source=biome&utm_medium=readme" target="_blank"><img src="https://avatars.githubusercontent.com/u/513560?s=200&v=4" width="80" alt="RStudio logo"></a>
-      </td>
-      <td align="center" valign="middle">
-        <a href="https://pennylane.com/?utm_source=biome&utm_medium=readme" target="_blank"><img src="https://avatars.githubusercontent.com/u/57875210?s=200&v=4" width="80" alt="Pennylane logo"></a>
       </td>
       <td align="center" valign="middle">
         <a href="https://jetbrains.com/?utm_source=biome&utm_medium=readme" target="_blank"><img src="https://resources.jetbrains.com/storage/products/company/brand/logos/jetbrains.png" width="100" alt="JetBrains logo"></a>

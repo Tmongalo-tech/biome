@@ -117,7 +117,7 @@ fn run_test(input: &'static str, _: &str, _: &str, _: &str) {
                 );
             }
         } else {
-            let Ok(mut source_type): Result<CssFileSource, _> = input_file.try_into() else {
+            let Ok(mut source_type) = CssFileSource::try_from(input_file) else {
                 return;
             };
 

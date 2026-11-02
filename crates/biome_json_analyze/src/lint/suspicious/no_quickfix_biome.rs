@@ -8,17 +8,17 @@ use biome_json_factory::make::{
 use biome_json_syntax::{
     AnyJsonMemberName, AnyJsonValue, JsonMember, JsonObjectValue, T, inner_string_text,
 };
-use biome_rowan::{AstNode, AstSeparatedList, BatchMutationExt, TextRange, TriviaPieceKind};
+use biome_rowan::{AstNode, AstSeparatedList, BatchMutationExt, TextRange};
 use biome_rule_options::no_quickfix_biome::NoQuickfixBiomeOptions;
 
 declare_lint_rule! {
-    /// Disallow the use if `quickfix.biome` inside editor settings file.
+    /// Disallow `quickfix.biome` in supported editor settings.
     ///
-    /// The code action `quickfix.biome` can be harmful because it instructs the editors
-    /// to apply the code fix of lint rules and code actions atomically. If multiple rules or
-    /// actions apply a code fix to the same code span, the editor will emit invalid code.
+    /// `quickfix.biome` asks the editor to apply independent Biome fixes together. When fixes edit
+    /// the same source text, their changes can overlap and produce invalid code. Use
+    /// `source.fixAll.biome` instead.
     ///
-    /// The rule targets specifically VSCode settings and Zed settings. Specifically, paths that end with:
+    /// The rule checks Visual Studio Code and Zed settings files whose paths end with:
     /// - `.vscode/settings.json`
     /// - `Code/User/settings.json`
     /// - `.zed/settings.json`
@@ -44,14 +44,11 @@ declare_lint_rule! {
     ///
     /// ## Options
     ///
-    /// The following options are available
-    ///
     /// ### `additionalPaths`
     ///
-    /// It's possible to specify a list of JSON paths, if your editor uses a JSON file setting that isn't supported natively by the rule.
-    ///
-    /// If your editor uses, for example, a file called `.myEditor/file.json`, you can add `".myEditor/file.json"` to the list.
-    /// **The rule checks if the file ends with the given paths**.
+    /// Adds settings-file path suffixes for other editors. For example, adding
+    /// `".myEditor/file.json"` checks every file whose path ends with that value. Defaults to an
+    /// empty list.
     ///
     /// ```json,options
     /// {
@@ -171,7 +168,7 @@ impl Rule for NoQuickfixBiome {
                 AnyJsonMemberName::JsonMemberName(json_member_name(json_string_literal(
                     "source.fixAll.biome",
                 ))),
-                token(T![:]).with_trailing_trivia(vec![(TriviaPieceKind::Whitespace, " ")]),
+                token(T![:]).with_trailing_space(),
                 if path.as_str().contains("zed") || path.as_str().contains(".zed") {
                     AnyJsonValue::JsonBooleanValue(json_boolean_value(token(T![true])))
                 } else {

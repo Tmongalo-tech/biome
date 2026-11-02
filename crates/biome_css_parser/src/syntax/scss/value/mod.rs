@@ -1,13 +1,15 @@
 mod any;
 mod function;
+mod hash_value;
 mod interpolated_string;
 mod interpolated_url;
 mod interpolated_value;
 mod parent_selector;
+mod percent;
 
 use crate::parser::CssParser;
 use crate::syntax::parse_error::scss_only_syntax_error;
-use crate::syntax::scss::parse_scss_expression_until;
+use crate::syntax::scss::{is_at_scss_unary_operator, parse_scss_expression_until};
 use crate::syntax::value::function::is_at_any_function_with_context;
 use crate::syntax::{
     CssSyntaxFeatures, ValueParsingContext, ValueParsingMode, is_at_any_value_with_context,
@@ -23,6 +25,7 @@ pub(crate) use function::{
     is_at_scss_function, is_nth_at_scss_function, parse_scss_function,
     parse_scss_function_call_from_name,
 };
+pub(crate) use hash_value::parse_scss_hash_value_or_color;
 pub(crate) use interpolated_string::{
     is_at_scss_interpolated_string, parse_scss_interpolated_string,
 };
@@ -36,6 +39,7 @@ pub(crate) use interpolated_value::{
 pub(crate) use parent_selector::{
     is_at_scss_parent_selector_value, parse_scss_parent_selector_value,
 };
+pub(crate) use percent::{is_at_scss_percent_value, parse_scss_percent_value};
 
 pub(crate) const SCSS_BRACKETED_VALUE_EXPRESSION_END_SET: TokenSet<CssSyntaxKind> =
     token_set![T![']'], T![,], T![/]];
@@ -43,7 +47,7 @@ pub(crate) const SCSS_BRACKETED_VALUE_EXPRESSION_END_SET: TokenSet<CssSyntaxKind
 /// Parses a Sass expression item inside the shared bracketed-value parser.
 ///
 /// This keeps plain CSS custom identifiers on the fallback path, while parsing
-/// Sass-only values and CSS-wide keywords as expressions.
+/// Sass-only values, unary operators and CSS-wide keywords as expressions.
 ///
 /// Examples:
 /// ```scss
@@ -70,7 +74,11 @@ pub(crate) fn parse_scss_bracketed_value_expression_item(p: &mut CssParser) -> P
 
 #[inline]
 fn is_at_scss_bracketed_value_expression_item(p: &mut CssParser) -> bool {
-    if p.at(T!['(']) {
+    // CSS grid line names may use `not` as a custom identifier.
+    let is_unary_expression =
+        (!p.at(T![not]) || CssSyntaxFeatures::Scss.is_supported(p)) && is_at_scss_unary_operator(p);
+
+    if p.at(T!['(']) || is_unary_expression {
         return true;
     }
 

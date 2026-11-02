@@ -6,7 +6,8 @@ use crate::{
     RawTypeId, ReturnType, TypeData, TypeImportQualifier, TypeInstance, TypeMember, TypeMemberKind,
     TypeReference, TypeReferenceQualifier, TypeofAwaitExpression, TypeofExpression, Union,
 };
-use biome_formatter::prelude::*;
+use biome_formatter::rowan::RowanSource;
+use biome_formatter::rowan::prelude::*;
 use biome_formatter::{
     FormatContext, FormatOptions, IndentStyle, IndentWidth, LineEnding, LineWidth,
     SourceMapGeneration, TrailingNewline, TransformSourceMap,
@@ -55,6 +56,7 @@ pub struct FormatTypeContext;
 
 impl FormatContext for FormatTypeContext {
     type Options = FormatTypeOptions;
+    type Source = RowanSource;
 
     fn options(&self) -> &Self::Options {
         &FormatTypeOptions
@@ -108,6 +110,7 @@ impl Format<FormatTypeContext> for TypeData {
             Self::Union(union) => write!(f, [&union.as_ref()]),
             Self::TypeOperator(ty) => write!(f, [FmtVerbatim(&ty.as_ref())]),
             Self::IndexedAccess(ty) => write!(f, [FmtVerbatim(ty.as_ref())]),
+            Self::MappedType(ty) => write!(f, [FmtVerbatim(ty.as_ref())]),
             Self::Literal(ty) => write!(f, [&ty.as_ref()]),
             Self::InstanceOf(ty) => write!(
                 f,

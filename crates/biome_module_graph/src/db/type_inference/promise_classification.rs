@@ -33,7 +33,6 @@ use biome_js_type_info::{
     },
 };
 use biome_rowan::Text;
-use rustc_hash::FxHashSet;
 
 const MAX_PROMISE_CLASSIFICATION_STATES: usize = 1024;
 
@@ -191,12 +190,16 @@ fn classify_expression(
         members: Box::default(),
         projection,
     };
-    let mut seen = FxHashSet::default();
+    // The successor of a classification state is a pure function of that state,
+    // so revisiting a state means the traversal cycles forever and the answer is
+    // indeterminate. Brent's cycle detection finds such a loop by comparing the
+    // current state against a checkpoint that is refreshed at exponentially
+    // growing intervals, which avoids hashing and storing every visited state.
+    let mut checkpoint = state.clone();
+    let mut checkpoint_interval = 1usize;
+    let mut steps_since_checkpoint = 0usize;
 
     for _ in 0..MAX_PROMISE_CLASSIFICATION_STATES {
-        if !seen.insert(state.clone()) {
-            return Indeterminate;
-        }
         db.unwind_if_revision_cancelled();
 
         state = match state.target {
@@ -349,7 +352,7 @@ fn classify_expression(
                                     projection: state.projection,
                                 };
                             }
-                            let binding_range = binding.syntax().text_trimmed_range();
+                            let binding_range = binding.range();
                             let Some(reference) = js_info.raw_binding_types.get(&binding_range)
                             else {
                                 return Indeterminate;
@@ -392,9 +395,7 @@ fn classify_expression(
                                 None => Indeterminate,
                             },
                             Projection::FunctionReturn => {
-                                if let InferredTypeData::GlobalType(id) = ty {
-                                    ty = global_types(db).get(id);
-                                }
+                                ty = ty.expand_canonical_global(db);
                                 let result = function_returns_promise(db, ty);
                                 match result {
                                     Some(true) => ReturnsPromise,
@@ -408,9 +409,7 @@ fn classify_expression(
                                 None => Indeterminate,
                             },
                             Projection::ArrayFunctionReturn => {
-                                if let InferredTypeData::GlobalType(id) = ty {
-                                    ty = global_types(db).get(id);
-                                }
+                                ty = ty.expand_canonical_global(db);
                                 let Some(function) = ty.callable_function(db) else {
                                     return DoesNotReturnPromise;
                                 };
@@ -434,9 +433,7 @@ fn classify_expression(
                                 }
                             }
                             Projection::AwaitedArrayFunctionReturn => {
-                                if let InferredTypeData::GlobalType(id) = ty {
-                                    ty = global_types(db).get(id);
-                                }
+                                ty = ty.expand_canonical_global(db);
                                 let Some(function) = ty.callable_function(db) else {
                                     return DoesNotReturnPromise;
                                 };
@@ -949,6 +946,7 @@ fn classify_expression(
                     | RawTypeData::Union(_)
                     | RawTypeData::TypeOperator(_)
                     | RawTypeData::IndexedAccess(_)
+                    | RawTypeData::MappedType(_)
                     | RawTypeData::MergedReference(_)
                     | RawTypeData::AnyKeyword
                     | RawTypeData::UnknownKeyword => return Indeterminate,
@@ -1106,6 +1104,17 @@ fn classify_expression(
                 }
             }
         };
+
+        if state == checkpoint {
+            return Indeterminate;
+        }
+
+        steps_since_checkpoint += 1;
+        if steps_since_checkpoint == checkpoint_interval {
+            checkpoint = state.clone();
+            checkpoint_interval *= 2;
+            steps_since_checkpoint = 0;
+        }
     }
 
     Indeterminate

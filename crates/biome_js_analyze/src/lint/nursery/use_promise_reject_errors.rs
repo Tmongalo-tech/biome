@@ -47,10 +47,13 @@ declare_lint_rule! {
     /// Promise.reject(getError());
     /// ```
     pub UsePromiseRejectErrors {
-        version: "next",
+        version: "2.5.15",
         name: "usePromiseRejectErrors",
         language: "js",
-        sources: &[RuleSource::Eslint("prefer-promise-reject-errors").same()],
+        sources: &[
+            RuleSource::Eslint("prefer-promise-reject-errors").same(),
+            RuleSource::EslintTypeScript("prefer-promise-reject-errors").same(),
+        ],
         recommended: false,
         severity: Severity::Warning,
     }

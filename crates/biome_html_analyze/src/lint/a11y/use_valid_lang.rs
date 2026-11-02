@@ -9,7 +9,12 @@ use biome_rowan::TextRange;
 use biome_rule_options::use_valid_lang::UseValidLangOptions;
 
 declare_lint_rule! {
-    /// Ensure that the attribute passed to the `lang` attribute is a correct ISO language and/or country.
+    /// Require a supported language tag on the `<html>` element.
+    ///
+    /// For static values, the rule accepts a language code such as `en`, optionally followed by a
+    /// script or region (`zh-Hant` or `en-GB`), or by both (`zh-Hant-TW`). Tags with additional
+    /// variants or extensions are outside the supported subset and are reported. Dynamic values are
+    /// not evaluated.
     ///
     /// ## Examples
     ///
@@ -147,7 +152,10 @@ impl Rule for UseValidLang {
             markup! {
                 "Provide a valid value for the "<Emphasis>"lang"</Emphasis>" attribute."
             },
-        );
+        )
+        .note(markup! {
+            "Screen readers use the language to choose how to pronounce the text. An invalid value can make them read the content with the wrong voice."
+        });
         diagnostic = match state.invalid_kind {
             InvalidKind::Language => {
                 let languages = biome_aria_metadata::languages();
@@ -179,7 +187,9 @@ impl Rule for UseValidLang {
 
                 diagnostic.footer_list("Some of valid scripts:", scripts)
             }
-            InvalidKind::Value => diagnostic,
+            InvalidKind::Value => diagnostic.note(markup! {
+                "Use a valid language tag, for example "<Emphasis>"en"</Emphasis>" or "<Emphasis>"en-US"</Emphasis>"."
+            }),
         };
         Some(diagnostic)
     }

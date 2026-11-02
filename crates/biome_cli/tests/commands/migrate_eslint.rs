@@ -219,7 +219,7 @@ fn migrate_eslintrcjson_fix() {
 
 #[test]
 fn migrate_eslintrcjson_override_existing_config() {
-    let biomejson = r#"{ "linter": { "rules": { "recommended": true, "suspicious": { "noDoubleEquals": "error" } } } }"#;
+    let biomejson = r#"{ "linter": { "rules": { "preset": "recommended", "suspicious": { "noDoubleEquals": "error" } } } }"#;
     let eslintrc = r#"{ "rules": { "eqeqeq": "off" } }"#;
 
     let fs = MemoryFileSystem::default();
@@ -879,6 +879,32 @@ fn migrate_rules_covered_by_formatter() {
     assert_cli_snapshot(SnapshotPayload::new(
         module_path!(),
         "migrate_rules_covered_by_formatter",
+        fs,
+        console,
+        result,
+    ));
+}
+
+#[test]
+fn migrate_one_var_is_inspired() {
+    let biomejson = r#"{}"#;
+    let eslintrc = r#"{ "rules": { "one-var": "error" } }"#;
+
+    let fs = MemoryFileSystem::default();
+    fs.insert(Utf8Path::new("biome.json").into(), biomejson.as_bytes());
+    fs.insert(Utf8Path::new(".eslintrc.json").into(), eslintrc.as_bytes());
+
+    let mut console = BufferConsole::default();
+    let (fs, result) = run_cli(
+        fs,
+        &mut console,
+        Args::from(["migrate", "eslint"].as_slice()),
+    );
+
+    assert!(result.is_ok(), "run_cli returned {result:?}");
+    assert_cli_snapshot(SnapshotPayload::new(
+        module_path!(),
+        "migrate_one_var_is_inspired",
         fs,
         console,
         result,

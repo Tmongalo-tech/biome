@@ -27,6 +27,7 @@ pub mod json;
 pub mod markdown;
 pub mod max_size;
 mod overrides;
+pub mod tailwind;
 pub mod vcs;
 #[cfg(feature = "lang_yaml")]
 pub mod yaml;
@@ -57,9 +58,14 @@ pub use crate::markdown::MarkdownConfiguration;
 #[cfg(all(feature = "cli", feature = "lang_md"))]
 pub use crate::markdown::markdown_configuration;
 use crate::max_size::MaxSize;
+pub use crate::tailwind::TailwindConfiguration;
 use crate::vcs::VcsConfiguration;
 #[cfg(feature = "cli")]
 use crate::vcs::vcs_configuration;
+#[cfg(feature = "lang_yaml")]
+pub use crate::yaml::YamlConfiguration;
+#[cfg(all(feature = "cli", feature = "lang_yaml"))]
+pub use crate::yaml::yaml_configuration;
 #[cfg(feature = "cli")]
 pub use analyzer::linter_configuration;
 pub use analyzer::{
@@ -71,8 +77,8 @@ use biome_console::fmt::{Display, Formatter};
 use biome_console::{KeyValuePair, markup};
 use biome_deserialize::{
     Deserializable, DeserializableTypes, DeserializableValidator, DeserializableValue,
-    DeserializationContext, DeserializationDiagnostic, DeserializationVisitor, MapMembers, Text,
-    TextRange,
+    DeserializationContext, DeserializationDiagnostic, DeserializationVisitor, MapMembers, Merge,
+    Text, TextRange,
 };
 use biome_deserialize_macros::{Deserializable, Merge};
 use biome_diagnostics::Severity;
@@ -112,7 +118,7 @@ use std::fmt::Debug;
 use std::iter::FusedIterator;
 use std::slice::Iter;
 use std::str::FromStr;
-use std::sync::LazyLock;
+use std::sync::{Arc, LazyLock};
 use vcs::VcsClientKind;
 
 pub const DEFAULT_SCANNER_IGNORE_ENTRIES: &[&[u8]] = &[
@@ -136,7 +142,7 @@ pub const VERSION: &str = match option_env!("BIOME_VERSION") {
 
 pub type RootEnabled = Bool<true>;
 
-/// The configuration contained in `biome.json`.
+/// The configuration contained in `biome.json` or `biome.jsonc`.
 #[derive(Clone, Debug, Default, Deserialize, Eq, PartialEq, Serialize, Deserializable, Merge)]
 #[cfg_attr(feature = "cli", derive(Bpaf))]
 #[cfg_attr(feature = "schema", derive(schemars::JsonSchema))]
@@ -144,19 +150,30 @@ pub type RootEnabled = Bool<true>;
 #[serde(deny_unknown_fields, default, rename_all = "camelCase")]
 #[deserializable(with_validator)]
 pub struct Configuration {
-    /// A field for the JSON schema specification: https://json-schema.org/
+    /// The JSON Schema used to validate the configuration and provide editor completion. Biome
+    /// emits a diagnostic when a `biomejs.dev` schema URL specifies a version that differs from the
+    /// running CLI version.
     #[serde(rename = "$schema")]
     #[cfg_attr(feature = "cli", bpaf(hide, pure(Default::default())))]
     #[serde(skip_serializing_if = "Option::is_none")]
     pub schema: Option<Schema>,
 
-    /// Indicates whether this configuration file is at the root of a Biome
-    /// project. By default, this is `true`.
+    /// Marks whether this file is the root configuration for a Biome project. The root configuration
+    /// establishes the project's base settings, while `false` marks a configuration found inside the
+    /// project as nested rather than a second project root.
+    ///
+    /// Defaults to `true`. Biome implicitly treats `root` as `false` when a nested configuration uses
+    /// `"extends": "//"`. All other nested configurations must explicitly set `root` to `false`.
     #[cfg_attr(feature = "cli", bpaf(hide, hide_usage))]
     #[serde(skip_serializing_if = "Option::is_none")]
     pub root: Option<RootEnabled>,
 
-    /// A list of paths to other JSON files, used to extend the current configuration.
+    /// Extends the current configuration with settings from one or more other Biome configurations.
+    /// Use `"//"` in a nested configuration to extend the root configuration at any nesting depth.
+    /// Use an array to extend configurations by relative path or installed package specifier.
+    ///
+    /// Biome merges configurations from left to right. Later configurations take precedence for
+    /// single-value options, list entries are combined, and the current file is applied last.
     #[cfg_attr(feature = "cli", bpaf(hide, pure(Default::default())))]
     #[serde(skip_serializing_if = "Option::is_none")]
     pub extends: Option<Extends>,
@@ -169,7 +186,7 @@ pub struct Configuration {
     #[serde(skip_serializing_if = "Option::is_none")]
     pub vcs: Option<VcsConfiguration>,
 
-    /// The file handling configuration.
+    /// Configures which files Biome can discover and process.
     #[cfg_attr(
         feature = "cli",
         bpaf(external(files_configuration), optional, hide_usage)
@@ -177,7 +194,7 @@ pub struct Configuration {
     #[serde(skip_serializing_if = "Option::is_none")]
     pub files: Option<FilesConfiguration>,
 
-    /// The formatter configuration.
+    /// Configures formatting for selected files.
     #[cfg_attr(feature = "cli", bpaf(external(formatter_configuration), optional))]
     #[serde(skip_serializing_if = "Option::is_none")]
     pub formatter: Option<FormatterConfiguration>,
@@ -186,6 +203,11 @@ pub struct Configuration {
     #[cfg_attr(feature = "cli", bpaf(external(linter_configuration), optional))]
     #[serde(skip_serializing_if = "Option::is_none")]
     pub linter: Option<LinterConfiguration>,
+
+    /// Configures how Biome recognizes Tailwind class strings.
+    #[cfg_attr(feature = "cli", bpaf(hide, pure(Default::default())))]
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub tailwind: Option<TailwindConfiguration>,
 
     /// Configuration specific to JavaScript.
     #[cfg(feature = "lang_js")]
@@ -206,22 +228,16 @@ pub struct Configuration {
     pub css: Option<CssConfiguration>,
 
     /// Configuration specific to Markdown.
-    #[cfg_attr(
-        feature = "cli",
-        bpaf(external(markdown_configuration), optional, hide)
-    )]
+    #[cfg_attr(feature = "cli", bpaf(external(markdown_configuration), optional))]
     #[serde(skip_serializing_if = "Option::is_none")]
     #[cfg(feature = "lang_md")]
     pub markdown: Option<MarkdownConfiguration>,
 
     /// Configuration specific to YAML.
-    #[cfg_attr(
-        feature = "cli",
-        bpaf(external(crate::yaml::yaml_configuration), optional, hide)
-    )]
+    #[cfg_attr(feature = "cli", bpaf(external(yaml_configuration), optional))]
     #[serde(skip_serializing_if = "Option::is_none")]
     #[cfg(feature = "lang_yaml")]
-    pub yaml: Option<crate::yaml::YamlConfiguration>,
+    pub yaml: Option<YamlConfiguration>,
 
     /// Configuration specific to GraphQL.
     #[cfg(feature = "lang_graphql")]
@@ -246,12 +262,13 @@ pub struct Configuration {
     #[serde(skip_serializing_if = "Option::is_none")]
     pub html: Option<HtmlConfiguration>,
 
-    /// A list of granular patterns applied only to a subset of files.
+    /// Configures settings for files selected by each override. When multiple overrides configure
+    /// the same single-value setting, the last matching override takes precedence.
     #[cfg_attr(feature = "cli", bpaf(hide, pure(Default::default())))]
     #[serde(skip_serializing_if = "Option::is_none")]
     pub overrides: Option<Overrides>,
 
-    /// List of plugins to load.
+    /// A list of GritQL plugins to load.
     #[cfg(feature = "plugins")]
     #[cfg_attr(feature = "cli", bpaf(hide, pure(Default::default())))]
     #[cfg_attr(feature = "plugins", serde(skip_serializing_if = "Option::is_none"))]
@@ -264,9 +281,9 @@ pub struct Configuration {
 }
 
 impl DeserializableValidator for Configuration {
-    fn validate(
+    fn validate<S>(
         &mut self,
-        ctx: &mut dyn DeserializationContext,
+        ctx: &mut dyn DeserializationContext<State = S>,
         _name: &str,
         range: TextRange,
     ) -> bool {
@@ -367,6 +384,10 @@ impl Configuration {
 
     pub fn extends_root(&self) -> bool {
         self.extends.as_ref().is_some_and(Extends::extends_root)
+    }
+
+    pub fn get_files_configuration(&self) -> FilesConfiguration {
+        self.files.clone().unwrap_or_default()
     }
 
     pub fn get_formatter_configuration(&self) -> FormatterConfiguration {
@@ -540,19 +561,19 @@ static SCHEMA_REGEX: LazyLock<Regex> =
     LazyLock::new(|| Regex::new(r"https://biomejs.dev/schemas/([\d.]+)/schema.json").unwrap());
 
 impl Deserializable for Schema {
-    fn deserialize(
-        ctx: &mut dyn DeserializationContext,
-        value: &impl DeserializableValue,
+    fn deserialize<V: DeserializableValue>(
+        ctx: &mut dyn DeserializationContext<State = V::State>,
+        value: &V,
         name: &str,
     ) -> Option<Self> {
         struct Visitor;
-        impl DeserializationVisitor for Visitor {
+        impl<S> DeserializationVisitor<S> for Visitor {
             type Output = Schema;
             const EXPECTED_TYPE: DeserializableTypes = DeserializableTypes::STR;
 
             fn visit_str(
                 self,
-                ctx: &mut dyn DeserializationContext,
+                ctx: &mut dyn DeserializationContext<State = S>,
                 value: Text,
                 range: TextRange,
                 _name: &str,
@@ -643,12 +664,13 @@ pub type FilesIgnoreUnknownEnabled = Bool<false>;
 #[cfg_attr(feature = "schema", derive(schemars::JsonSchema))]
 #[serde(rename_all = "camelCase", default, deny_unknown_fields)]
 pub struct FilesConfiguration {
-    /// The maximum source file size in bytes. Biome ignores larger files. Defaults to `1 MiB`.
+    /// The maximum source-file size in bytes. Biome skips larger files and emits a warning
+    /// diagnostic. Defaults to `1 MiB`.
     #[cfg_attr(feature = "cli", bpaf(long("files-max-size"), argument("NUMBER")))]
     #[serde(skip_serializing_if = "Option::is_none")]
     pub max_size: Option<MaxSize>,
 
-    /// Prevents Biome from emitting diagnostics for unrecognized file types.
+    /// Prevents Biome from emitting diagnostics for unrecognized file types. Defaults to `false`.
     #[cfg_attr(
         feature = "cli",
         bpaf(long("files-ignore-unknown"), argument("true|false"), optional)
@@ -656,8 +678,16 @@ pub struct FilesConfiguration {
     #[serde(skip_serializing_if = "Option::is_none")]
     pub ignore_unknown: Option<FilesIgnoreUnknownEnabled>,
 
-    /// A list of glob patterns. Biome handles only files and directories that match these
-    /// patterns.
+    /// A list of glob patterns selecting which files and directories Biome can process. If omitted,
+    /// this option does not further restrict the supported files Biome can process. An empty list
+    /// selects no files. Biome ignores files under `node_modules` even when they match a pattern.
+    ///
+    /// The scanner uses these patterns and, when enabled, VCS ignore files while discovering nested
+    /// configuration and ignore files. When enabled rules use the `project` or `types` domains, it
+    /// also indexes source files and project dependencies. It may still discover required metadata or
+    /// index excluded source files needed for analysis. A pattern beginning with `!!` prevents the
+    /// scanner from indexing matching paths. Patterns are evaluated in order, and a pattern beginning
+    /// with `!` excludes matches.
     #[cfg_attr(feature = "cli", bpaf(hide, pure(Default::default())))]
     #[serde(skip_serializing_if = "Option::is_none")]
     pub includes: Option<Vec<biome_glob::NormalizedGlob>>,
@@ -665,19 +695,20 @@ pub struct FilesConfiguration {
     /// **Deprecated:** Please use _force-ignore syntax_ in `files.includes`
     /// instead: <https://biomejs.dev/reference/configuration/#filesincludes>
     ///
-    /// Set of file and folder names that should be unconditionally ignored by
-    /// Biome's scanner.
+    /// File or directory names that the scanner ignores unconditionally while crawling. Each value
+    /// matches a complete path component, not a glob. Ignored files are not added to the module graph,
+    /// so types are not inferred from them.
     #[cfg_attr(feature = "cli", bpaf(hide, pure(Default::default())))]
     #[serde(skip_serializing_if = "Option::is_none")]
     pub experimental_scanner_ignores: Option<Vec<String>>,
 }
 
 impl FilesConfiguration {
-    fn deserialize_field(
+    fn deserialize_field<S>(
         &mut self,
-        ctx: &mut dyn DeserializationContext,
+        ctx: &mut dyn DeserializationContext<State = S>,
         name: &str,
-        value: &impl DeserializableValue,
+        value: &impl DeserializableValue<State = S>,
         range: TextRange,
     ) {
         match name {
@@ -742,19 +773,19 @@ impl FilesConfiguration {
 }
 
 impl biome_deserialize::Deserializable for FilesConfiguration {
-    fn deserialize(
-        ctx: &mut dyn DeserializationContext,
-        value: &impl DeserializableValue,
+    fn deserialize<V: DeserializableValue>(
+        ctx: &mut dyn DeserializationContext<State = V::State>,
+        value: &V,
         name: &str,
     ) -> Option<Self> {
         struct Visitor;
-        impl DeserializationVisitor for Visitor {
+        impl<S> DeserializationVisitor<S> for Visitor {
             type Output = FilesConfiguration;
             const EXPECTED_TYPE: DeserializableTypes = DeserializableTypes::MAP;
             fn visit_map(
                 self,
-                ctx: &mut dyn DeserializationContext,
-                members: &mut MapMembers<'_>,
+                ctx: &mut dyn DeserializationContext<State = S>,
+                members: &mut MapMembers<'_, S>,
                 _range: TextRange,
                 _name: &str,
             ) -> Option<Self::Output> {
@@ -836,17 +867,35 @@ impl ConfigurationPathHint {
 
 #[derive(Clone, Debug, Default)]
 pub struct ConfigurationSource {
-    /// It contains [Configuration] and the folder where it was found.
-    pub source: Option<(Configuration, Option<Utf8PathBuf>)>,
+    /// The directory used to resolve paths in the configuration.
+    pub directory_path: Option<Utf8PathBuf>,
 
-    /// It contains possible extended configuration. If the configuration comes from a npm module,
-    ///  its URL will be its specifier e.g. `org/core`
+    /// The root configuration source.
+    pub root: Option<ConfigurationSourceEntry>,
+
+    /// The extended configuration files in merge order.
     pub extended_configurations: ExtendedConfigurations,
 }
 
 impl ConfigurationSource {
-    pub fn as_configuration(&self) -> Option<&Configuration> {
-        self.source.as_ref().map(|(config, _)| config)
+    /// Resolves the configuration inputs using the same order as `extends`.
+    pub fn resolve(&self) -> Configuration {
+        let mut root = self
+            .root
+            .as_ref()
+            .and_then(|root| root.configuration.clone())
+            .unwrap_or_default();
+        let mut configuration = Configuration::default();
+        let mut has_extends = false;
+        for extended in self.extended_configurations() {
+            configuration.merge_with(extended.clone());
+            has_extends = true;
+        }
+        if has_extends {
+            root.root = Some(root.is_root().into());
+        }
+        configuration.merge_with(root);
+        configuration
     }
 
     pub fn extended_configurations(&self) -> ExtendedConfigurationIterator<'_> {
@@ -856,15 +905,39 @@ impl ConfigurationSource {
     }
 }
 
+/// One unmerged input in a configuration source graph.
+#[derive(Clone, Debug)]
+pub struct ConfigurationSourceEntry {
+    /// The configuration deserialized from this input before merging.
+    pub configuration: Option<Configuration>,
+
+    /// The resolved path when this input came from a file.
+    pub file_path: Option<Utf8PathBuf>,
+
+    /// The exact text used to deserialize the configuration file.
+    pub file_source: Option<Arc<str>>,
+}
+
+/// An extended configuration file and the specifier that resolved to it.
+#[derive(Clone, Debug)]
+pub struct ExtendedConfiguration {
+    /// The value declared in the root configuration's `extends` field.
+    pub specifier: Option<String>,
+
+    /// The unmerged extended configuration.
+    pub source: ConfigurationSourceEntry,
+}
+
 pub struct ExtendedConfigurationIterator<'a> {
-    inner: Iter<'a, (Utf8PathBuf, Configuration)>,
+    inner: Iter<'a, ExtendedConfiguration>,
 }
 
 impl<'a> Iterator for ExtendedConfigurationIterator<'a> {
     type Item = &'a Configuration;
 
     fn next(&mut self) -> Option<Self::Item> {
-        self.inner.next().map(|(_, config)| config)
+        self.inner
+            .find_map(|extended| extended.source.configuration.as_ref())
     }
 }
 
@@ -872,12 +945,29 @@ impl FusedIterator for ExtendedConfigurationIterator<'_> {}
 
 impl DoubleEndedIterator for ExtendedConfigurationIterator<'_> {
     fn next_back(&mut self) -> Option<Self::Item> {
-        self.inner.next_back().map(|(_, config)| config)
+        while let Some(extended) = self.inner.next_back() {
+            if let Some(configuration) = extended.source.configuration.as_ref() {
+                return Some(configuration);
+            }
+        }
+        None
     }
 }
 
 #[derive(Clone, Debug, Default)]
-pub struct ExtendedConfigurations(Vec<(Utf8PathBuf, Configuration)>);
+pub struct ExtendedConfigurations(Vec<ExtendedConfiguration>);
+
+impl ExtendedConfigurations {
+    pub fn as_slice(&self) -> &[ExtendedConfiguration] {
+        &self.0
+    }
+}
+
+impl From<Vec<ExtendedConfiguration>> for ExtendedConfigurations {
+    fn from(value: Vec<ExtendedConfiguration>) -> Self {
+        Self(value)
+    }
+}
 
 impl<Path> From<Vec<(Path, Configuration)>> for ExtendedConfigurations
 where
@@ -887,25 +977,22 @@ where
         Self(
             value
                 .into_iter()
-                .map(|(path, config)| (path.into(), config))
+                .map(|(path, configuration)| ExtendedConfiguration {
+                    specifier: None,
+                    source: ConfigurationSourceEntry {
+                        configuration: Some(configuration),
+                        file_path: Some(path.into()),
+                        file_source: None,
+                    },
+                })
                 .collect(),
         )
     }
 }
 
 impl ConfigurationSource {
-    pub fn source(&self) -> Option<Configuration> {
-        self.source.as_ref().map(|source| {
-            let (config, _) = source.clone();
-            config
-        })
-    }
-
     pub fn source_path(&self) -> Option<Utf8PathBuf> {
-        self.source.as_ref().and_then(|source| {
-            let (_, path) = source.clone();
-            path.map(|p| p.as_path().to_path_buf())
-        })
+        self.directory_path.clone()
     }
 }
 
@@ -913,6 +1000,21 @@ impl ExtendedConfigurationProvider for ConfigurationSource {
     fn any_extended_starts_with_catch_all(&self) -> bool {
         self.extended_configurations().any(|c| {
             c.files
+                .as_ref()
+                .and_then(|files| files.includes.as_deref())
+                .is_some_and(|globs| globs.first().is_some_and(|glob| glob.as_str() == "**"))
+        })
+    }
+}
+
+impl ExtendedConfigurationProvider for ExtendedConfigurations {
+    fn any_extended_starts_with_catch_all(&self) -> bool {
+        ExtendedConfigurationIterator {
+            inner: self.0.iter(),
+        }
+        .any(|configuration| {
+            configuration
+                .files
                 .as_ref()
                 .and_then(|files| files.includes.as_deref())
                 .is_some_and(|globs| globs.first().is_some_and(|glob| glob.as_str() == "**"))

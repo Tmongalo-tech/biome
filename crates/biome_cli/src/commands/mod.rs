@@ -15,7 +15,12 @@ use biome_configuration::javascript::{JsFormatterConfiguration, JsLinterConfigur
 use biome_configuration::json::{
     JsonFormatterConfiguration, JsonLinterConfiguration, JsonParserConfiguration,
 };
+use biome_configuration::markdown::{
+    MarkdownAnalyzeEmbeds, MarkdownFormatterConfiguration, MarkdownLinterConfiguration,
+    MarkdownParserConfiguration,
+};
 use biome_configuration::vcs::VcsConfiguration;
+use biome_configuration::yaml::YamlFormatterConfiguration;
 use biome_configuration::{BiomeDiagnostic, Configuration};
 use biome_configuration::{
     FilesConfiguration, FormatterConfiguration, LinterConfiguration, configuration,
@@ -29,10 +34,15 @@ use biome_configuration::{
     json::json_linter_configuration,
     json::json_parser_configuration,
     linter_configuration,
+    markdown::markdown_formatter_configuration,
+    markdown::markdown_linter_configuration,
+    markdown::markdown_parser_configuration,
     vcs::vcs_configuration,
+    yaml::yaml_formatter_configuration,
 };
 use biome_console::{Console, ConsoleExt, markup};
 use biome_diagnostics::{Diagnostic, PrintDiagnostic, Severity};
+use biome_flags::{CiProvider, Environment};
 use biome_fs::FileSystem;
 use biome_service::configuration::LoadedConfiguration;
 use biome_service::documentation::Doc;
@@ -48,6 +58,7 @@ pub(crate) mod daemon;
 pub(crate) mod explain;
 pub(crate) mod format;
 pub(crate) mod init;
+pub(crate) mod inspect;
 pub(crate) mod lint;
 pub(crate) mod migrate;
 pub(crate) mod rage;
@@ -150,8 +161,11 @@ pub enum BiomeCommand {
         #[bpaf(external(json_parser_configuration), optional, hide_usage)]
         json_parser: Option<JsonParserConfiguration>,
 
-        #[bpaf(external(css_parser_configuration), optional, hide_usage, hide)]
+        #[bpaf(external(css_parser_configuration), optional, hide_usage)]
         css_parser: Option<CssParserConfiguration>,
+
+        #[bpaf(external(markdown_parser_configuration), optional, hide_usage)]
+        markdown_parser: Option<MarkdownParserConfiguration>,
 
         #[bpaf(external(configuration), hide_usage, optional)]
         configuration: Option<Configuration>,
@@ -166,8 +180,8 @@ pub enum BiomeCommand {
         #[bpaf(long("profile-rules"), switch)]
         profile_rules: bool,
 
-        /// Enables type inference profiling output.
-        #[bpaf(long("profile-type-inference"), switch, hide, hide_usage)]
+        /// Enables type-inference profiling output, grouped and ranked by source file.
+        #[bpaf(long("profile-type-inference"), switch, hide_usage)]
         profile_type_inference: bool,
 
         /// Reads code from standard input and writes the processed code to standard output.
@@ -256,8 +270,11 @@ pub enum BiomeCommand {
         #[bpaf(external(json_parser_configuration), optional, hide_usage)]
         json_parser: Option<JsonParserConfiguration>,
 
-        #[bpaf(external(css_parser_configuration), optional, hide_usage, hide)]
+        #[bpaf(external(css_parser_configuration), optional, hide_usage)]
         css_parser: Option<CssParserConfiguration>,
+
+        #[bpaf(external(markdown_parser_configuration), optional, hide_usage)]
+        markdown_parser: Option<MarkdownParserConfiguration>,
 
         #[bpaf(external(linter_configuration), hide_usage, optional)]
         linter_configuration: Option<LinterConfiguration>,
@@ -274,11 +291,24 @@ pub enum BiomeCommand {
         #[bpaf(external(json_linter_configuration), optional, hide_usage)]
         json_linter: Option<JsonLinterConfiguration>,
 
-        #[bpaf(external(css_linter_configuration), optional, hide_usage, hide)]
+        #[bpaf(external(css_linter_configuration), optional, hide_usage)]
         css_linter: Option<CssLinterConfiguration>,
 
-        #[bpaf(external(graphql_linter_configuration), optional, hide_usage, hide)]
+        #[bpaf(external(graphql_linter_configuration), optional, hide_usage)]
         graphql_linter: Option<GraphqlLinterConfiguration>,
+
+        #[bpaf(external(markdown_linter_configuration), optional, hide_usage)]
+        markdown_linter: Option<MarkdownLinterConfiguration>,
+
+        /// Runs the linter and assist actions on the code inside the fenced code blocks,
+        /// frontmatter, and HTML blocks of Markdown files. Defaults to `false`.
+        #[bpaf(
+            long("md-analyze-embeds"),
+            argument("true|false"),
+            optional,
+            hide_usage
+        )]
+        markdown_analyze_embeds: Option<MarkdownAnalyzeEmbeds>,
 
         #[bpaf(external, hide_usage)]
         cli_options: CliOptions,
@@ -341,8 +371,8 @@ pub enum BiomeCommand {
         #[bpaf(long("profile-rules"), switch)]
         profile_rules: bool,
 
-        /// Capture type-inference request and query timings.
-        #[bpaf(long("profile-type-inference"), switch, hide, hide_usage)]
+        /// Enables type-inference profiling output, grouped and ranked by source file.
+        #[bpaf(long("profile-type-inference"), switch, hide_usage)]
         profile_type_inference: bool,
 
         /// After the initial run, watches the selected paths and reprocesses files modified afterward.
@@ -379,6 +409,12 @@ pub enum BiomeCommand {
 
         #[bpaf(external(html_formatter_configuration), optional, hide_usage)]
         html_formatter: Option<HtmlFormatterConfiguration>,
+
+        #[bpaf(external(markdown_formatter_configuration), optional, hide_usage)]
+        markdown_formatter: Option<MarkdownFormatterConfiguration>,
+
+        #[bpaf(external(yaml_formatter_configuration), optional, hide_usage)]
+        yaml_formatter: Option<YamlFormatterConfiguration>,
 
         #[bpaf(external(vcs_configuration), optional, hide_usage)]
         vcs_configuration: Option<VcsConfiguration>,
@@ -522,11 +558,24 @@ pub enum BiomeCommand {
 
     /// Creates a default Biome configuration file in the current working directory.
     #[bpaf(command)]
-    Init(
+    Init {
         /// Creates `biome.jsonc` instead of `biome.json`.
         #[bpaf(long("jsonc"), switch)]
-        bool,
-    ),
+        jsonc: bool,
+
+        /// Enables Git VCS integration and respects Git ignore files.
+        #[bpaf(long("git"), switch)]
+        git: bool,
+    },
+    /// Inspects Biome state without modifying files.
+    #[bpaf(command)]
+    Inspect {
+        #[bpaf(external, hide_usage)]
+        cli_options: CliOptions,
+
+        #[bpaf(external(inspect_sub_command))]
+        sub_command: InspectSubCommand,
+    },
     /// Ensures that the Biome daemon server is running, then forwards Language Server Protocol messages between the daemon server and standard input and output.
     #[bpaf(command("lsp-proxy"))]
     LspProxy {
@@ -664,6 +713,65 @@ pub enum MigrateSubCommand {
         #[bpaf(long("include-nursery"))]
         include_nursery: bool,
     },
+    /// Imports a Stylelint configuration and ignore settings from the current working directory into the Biome configuration.
+    #[bpaf(command)]
+    Stylelint {
+        /// Includes Biome rules inspired by Stylelint rules in the migration.
+        #[bpaf(long("include-inspired"))]
+        include_inspired: bool,
+        /// Includes nursery rules in the migration.
+        #[bpaf(long("include-nursery"))]
+        include_nursery: bool,
+    },
+}
+
+#[derive(Debug, Bpaf, Clone)]
+pub enum InspectSubCommand {
+    /// Lists the plugin rules enabled by the configuration, grouped by plugin.
+    ///
+    /// Each rule shows whether the configuration lists it directly or through a preset. Rules
+    /// that apply only to some files are listed separately with their `includes` globs. Biome
+    /// locates the plugin files but doesn't compile or run them, so this command doesn't report
+    /// syntax errors or runtime failures.
+    #[bpaf(command)]
+    Plugins {
+        /// Lists only the rules that apply to this file, based on `overrides` and plugin `includes`.
+        /// Nested configuration files and ignore files are not considered.
+        #[bpaf(long("path"), argument("PATH"), optional)]
+        path: Option<String>,
+    },
+
+    /// Shows the final, resolved configuration, including `extends` and matching `overrides`.
+    #[bpaf(command)]
+    Config {
+        /// Evaluates matching overrides for this file path.
+        #[bpaf(long("path"), argument("PATH"), optional)]
+        path: Option<String>,
+
+        /// A dotted configuration key, such as `formatter.lineWidth`.
+        #[bpaf(positional("KEY"), optional)]
+        key: Option<String>,
+    },
+
+    /// Provides development information about a file. By default, it prints the CST of the file.
+    #[bpaf(command)]
+    File {
+        /// Prints the AST of the file.
+        #[bpaf(long("ast"), switch)]
+        ast: bool,
+
+        /// Prints the formatter IR, if supported.
+        #[bpaf(long("ir"), switch)]
+        ir: bool,
+
+        /// Prints the semantic information of a file, if it exists.
+        #[bpaf(long("semantic"), switch)]
+        semantic: bool,
+
+        /// Path to the file
+        #[bpaf(positional("PATH"))]
+        path: OsString,
+    },
 }
 
 impl MigrateSubCommand {
@@ -681,13 +789,14 @@ impl BiomeCommand {
             | Self::Lint { cli_options, .. }
             | Self::Ci { cli_options, .. }
             | Self::Format { cli_options, .. }
+            | Self::Inspect { cli_options, .. }
             | Self::Migrate { cli_options, .. }
             | Self::Search { cli_options, .. } => Some(cli_options),
             Self::LspProxy { .. }
             | Self::Upgrade
             | Self::Start { .. }
             | Self::Stop
-            | Self::Init(_)
+            | Self::Init { .. }
             | Self::Explain { .. }
             | Self::RunServer { .. }
             | Self::Clean { .. }
@@ -710,7 +819,8 @@ impl BiomeCommand {
             | Self::LspProxy { .. }
             | Self::Start { .. }
             | Self::Stop
-            | Self::Init(_)
+            | Self::Init { .. }
+            | Self::Inspect { .. }
             | Self::Explain { .. }
             | Self::RunServer { .. }
             | Self::Clean { .. }
@@ -719,7 +829,12 @@ impl BiomeCommand {
         }
     }
 
-    pub fn get_color(&self) -> Option<&ColorsArg> {
+    /// Returns the color mode requested for this command, or `None` to
+    /// detect it from the terminal.
+    ///
+    /// When the command doesn't request a color mode, the default can depend
+    /// on `environment`.
+    pub fn get_color(&self, environment: &dyn Environment) -> Option<&ColorsArg> {
         match self.cli_options() {
             Some(cli_options) => {
                 // To properly display GitHub annotations we need to disable colors
@@ -734,7 +849,8 @@ impl BiomeCommand {
                 // In GitHub Actions, we disable colors so the auto-enabled GitHub reporter
                 // output is not corrupted by ANSI escape codes.
                 if matches!(self, Self::Ci { .. }) && cli_options.colors.is_none() {
-                    if is_github_actions() {
+                    if CiProvider::from_environment(environment) == Some(CiProvider::GithubActions)
+                    {
                         return Some(&ColorsArg::Off);
                     }
                     return Some(&ColorsArg::Force);
@@ -788,21 +904,7 @@ impl BiomeCommand {
     }
 }
 
-/// Returns `true` when running in GitHub Actions in release builds.
-///
-/// In debug builds, this always returns `false` to avoid false positives in
-/// tests that run `biome ci` under CI (CI-ception).
-fn is_github_actions() -> bool {
-    if cfg!(debug_assertions) {
-        return false;
-    }
-    // Ref: https://docs.github.com/actions/learn-github-actions/variables#default-environment-variables
-    std::env::var("GITHUB_ACTIONS").is_ok_and(|v| v == "true")
-}
-
-/// It accepts a [LoadedConfiguration] and it prints the diagnostics emitted during parsing and deserialization.
-///
-/// If it contains [errors](Severity::Error) or higher, it returns an error.
+/// Prints configuration diagnostics and reports an error when loading produced an error.
 pub(crate) fn validate_configuration_diagnostics(
     loaded_configuration: &LoadedConfiguration,
     console: &mut dyn Console,
@@ -810,17 +912,17 @@ pub(crate) fn validate_configuration_diagnostics(
 ) -> Result<(), CliDiagnostic> {
     let diagnostics = loaded_configuration.as_diagnostics_iter();
 
-    // We want to print the diagnostics only if there are errors. Other diagnostics such as
-    // information/warnings will be printed during the traversal
-    if loaded_configuration.has_errors() {
-        for diagnostic in diagnostics {
-            if diagnostic.tags().is_verbose() && verbose {
+    for diagnostic in diagnostics {
+        if diagnostic.tags().is_verbose() {
+            if verbose {
                 console.error(markup! {{PrintDiagnostic::verbose(diagnostic)}})
-            } else {
-                console.error(markup! {{PrintDiagnostic::simple(diagnostic)}})
             }
+        } else {
+            console.error(markup! {{PrintDiagnostic::simple(diagnostic)}})
         }
+    }
 
+    if loaded_configuration.has_errors() {
         return Err(CliDiagnostic::workspace_error(
             BiomeDiagnostic::invalid_configuration(
                 "Biome exited because the configuration resulted in errors. Please fix them.",
@@ -983,6 +1085,29 @@ mod tests {
     use super::*;
 
     #[test]
+    fn configuration_diagnostics_require_verbose_flag() {
+        let loaded_configuration = LoadedConfiguration {
+            diagnostics: vec![
+                biome_service::diagnostics::ProtectedFile {
+                    file_path: "package-lock.json".to_string(),
+                    verbose_advice: biome_service::diagnostics::ProtectedFileAdvice,
+                }
+                .into(),
+            ],
+            ..LoadedConfiguration::default()
+        };
+        let mut console = biome_console::BufferConsole::default();
+
+        validate_configuration_diagnostics(&loaded_configuration, &mut console, false)
+            .expect("an informational diagnostic should not fail validation");
+        assert!(console.out_buffer.is_empty());
+
+        validate_configuration_diagnostics(&loaded_configuration, &mut console, true)
+            .expect("an informational diagnostic should not fail validation");
+        assert_eq!(console.out_buffer.len(), 1);
+    }
+
+    #[test]
     fn incompatible_arguments() {
         assert!(
             check_fix_incompatible_arguments(FixFileModeOptions {
@@ -1053,28 +1178,49 @@ mod tests {
         );
     }
 
-    /// Tests that all CLI options adhere to the invariants expected by `bpaf`.
-    #[test]
-    fn type_inference_profile_forces_in_process_validation() {
-        use bpaf::Args;
-
-        for command_name in ["lint", "check"] {
-            let command = biome_command()
-                .run_inner(Args::from(
-                    [command_name, "--profile-type-inference", "--use-server"].as_slice(),
-                ))
-                .expect("profile options must parse");
-            assert!(!command.should_use_server());
-            assert!(
-                command
-                    .cli_options()
-                    .is_some_and(|options| options.use_server)
-            );
-        }
-    }
-
     #[test]
     fn check_options() {
         biome_command().check_invariants(false);
+    }
+
+    fn parse(arguments: &[&str]) -> BiomeCommand {
+        biome_command()
+            .run_inner(bpaf::Args::from(arguments))
+            .expect("arguments to be valid")
+    }
+
+    #[test]
+    fn ci_forces_colors_outside_github_actions() {
+        let command = parse(&["ci", "file.js"]);
+        let environment = biome_flags::MemoryEnvironment::default().with_var("CI", "true");
+
+        assert!(matches!(
+            command.get_color(&environment),
+            Some(ColorsArg::Force)
+        ));
+    }
+
+    #[test]
+    fn ci_disables_colors_in_github_actions() {
+        let command = parse(&["ci", "file.js"]);
+        let environment =
+            biome_flags::MemoryEnvironment::default().with_var("GITHUB_ACTIONS", "true");
+
+        assert!(matches!(
+            command.get_color(&environment),
+            Some(ColorsArg::Off)
+        ));
+    }
+
+    #[test]
+    fn explicit_colors_win_in_github_actions() {
+        let command = parse(&["ci", "--colors=force", "file.js"]);
+        let environment =
+            biome_flags::MemoryEnvironment::default().with_var("GITHUB_ACTIONS", "true");
+
+        assert!(matches!(
+            command.get_color(&environment),
+            Some(ColorsArg::Force)
+        ));
     }
 }

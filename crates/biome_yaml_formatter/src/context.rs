@@ -1,10 +1,11 @@
 use crate::YamlCommentStyle;
 use crate::comments::{FormatYamlLeadingComment, YamlComments};
+use biome_formatter::rowan::RowanSource;
 use biome_formatter::{
-    CstFormatContext, FormatContext, FormatOptions, IndentStyle, LineEnding, LineWidth, QuoteStyle,
-    TrailingNewline, TransformSourceMap,
+    BracketSpacing, CstFormatContext, FormatContext, FormatOptions, IndentStyle, LineEnding,
+    LineWidth, QuoteStyle, TrailingNewline, TransformSourceMap,
 };
-use biome_formatter::{IndentWidth, prelude::*};
+use biome_formatter::{IndentWidth, rowan::prelude::*};
 use biome_yaml_syntax::YamlLanguage;
 use std::default::Default;
 use std::fmt;
@@ -35,6 +36,7 @@ impl YamlFormatContext {
 
 impl FormatContext for YamlFormatContext {
     type Options = YamlFormatOptions;
+    type Source = RowanSource;
 
     fn options(&self) -> &Self::Options {
         &self.options
@@ -65,6 +67,9 @@ pub struct YamlFormatOptions {
     /// The preferred quote style for quoted scalars that work with either
     /// kind of quote. Defaults to double quotes.
     quote_style: QuoteStyle,
+    /// Whether to insert spaces inside non-empty flow mappings and sequences
+    /// that fit on one line. When unset, mappings have spaces and sequences do not.
+    bracket_spacing: Option<BracketSpacing>,
 }
 
 impl YamlFormatOptions {
@@ -120,6 +125,19 @@ impl YamlFormatOptions {
     pub fn quote_style(&self) -> QuoteStyle {
         self.quote_style
     }
+
+    pub fn with_bracket_spacing(mut self, bracket_spacing: BracketSpacing) -> Self {
+        self.bracket_spacing = Some(bracket_spacing);
+        self
+    }
+
+    pub fn set_bracket_spacing(&mut self, bracket_spacing: BracketSpacing) {
+        self.bracket_spacing = Some(bracket_spacing);
+    }
+
+    pub fn bracket_spacing(&self) -> Option<BracketSpacing> {
+        self.bracket_spacing
+    }
 }
 
 impl FormatOptions for YamlFormatOptions {
@@ -155,6 +173,11 @@ impl fmt::Display for YamlFormatOptions {
         writeln!(f, "Line width: {}", self.line_width.value())?;
         writeln!(f, "Trailing newline: {}", self.trailing_newline.value())?;
         writeln!(f, "Quote style: {}", self.quote_style)?;
+        if let Some(bracket_spacing) = self.bracket_spacing {
+            writeln!(f, "Bracket spacing: {}", bracket_spacing.value())?;
+        } else {
+            writeln!(f, "Bracket spacing: unset")?;
+        }
 
         Ok(())
     }

@@ -18,12 +18,8 @@ use biome_js_syntax::{
 use biome_languages::JsFileSource;
 use biome_rowan::AstNode;
 pub use closure::*;
-use rust_lapper::{Interval, Lapper};
 use rustc_hash::{FxHashMap, FxHashSet};
-use std::{
-    collections::{BTreeSet, VecDeque},
-    iter::FusedIterator,
-};
+use std::{collections::VecDeque, iter::FusedIterator};
 
 pub use binding::*;
 pub use builder::*;
@@ -68,7 +64,7 @@ pub fn semantic_model(root: &AnyJsRoot, options: SemanticModelOptions) -> Semant
     }
 
     let root = root.syntax();
-    for node in root.preorder() {
+    for node in root.preorder_of_kinds(SemanticModelBuilder::VISITED_KINDS) {
         match node {
             biome_js_syntax::WalkEvent::Enter(node) => {
                 builder.push_node(&node);

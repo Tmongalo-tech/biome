@@ -4,7 +4,7 @@ on:
   workflow_dispatch:
   merge_group:
   pull_request:
-    types: [ opened, synchronize ]
+    types: [opened, synchronize]
     branches:
       - main
       - next
@@ -44,11 +44,13 @@ jobs:
       module_graph: ${{ steps.outputs.outputs.module_graph }}
       service: ${{ steps.outputs.outputs.service }}
       console: ${{ steps.outputs.outputs.console }}
+      plugins: ${{ steps.outputs.outputs.plugins }}
     steps:
       - name: Checkout Branch
         if: github.event_name == 'push'
         uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
         with:
+          persist-credentials: false
           fetch-depth: 2
 
       - name: Detect benchmark changes
@@ -171,6 +173,8 @@ jobs:
               - 'Cargo.lock'
               - 'crates/biome_analyze/**/*.rs'
               - 'crates/biome_configuration/**/*.rs'
+              - 'crates/biome_css_*/**/*.rs'
+              - 'crates/biome_formatter/**/*.rs'
               - 'crates/biome_fs/**/*.rs'
               - 'crates/biome_js_*/**/*.rs'
               - 'crates/biome_module_graph/**/*.rs'
@@ -179,12 +183,22 @@ jobs:
               - 'crates/biome_resolver/**/*.rs'
               - 'crates/biome_rowan/**/*.rs'
               - 'crates/biome_service/**/*.rs'
+              - 'crates/biome_service/benches/fixtures/**'
               - 'crates/biome_workspace_db/**/*.rs'
             console:
               - '.github/workflows/benchmark.yml'
               - 'Cargo.lock'
               - 'crates/biome_console/**/*.rs'
               - 'crates/biome_console/Cargo.toml'
+            plugins:
+              - '.github/workflows/benchmark.yml'
+              - 'Cargo.lock'
+              - 'crates/biome_analyze/**/*.rs'
+              - 'crates/biome_grit_patterns/**/*.rs'
+              - 'crates/biome_js_analyze/**/*.rs'
+              - 'crates/biome_js_runtime/**/*.rs'
+              - 'crates/biome_plugin_loader/**'
+              - 'crates/biome_rowan/**/*.rs'
 
       - name: Set change outputs
         id: outputs
@@ -204,6 +218,7 @@ jobs:
           MODULE_GRAPH: ${{ steps.filter.outputs.module_graph }}
           SERVICE: ${{ steps.filter.outputs.service }}
           CONSOLE: ${{ steps.filter.outputs.console }}
+          PLUGINS: ${{ steps.filter.outputs.plugins }}
         run: |
           if [ "$EVENT_NAME" = 'workflow_dispatch' ] || [ "$EVENT_NAME" = 'merge_group' ]; then
             JS=true
@@ -220,6 +235,7 @@ jobs:
             MODULE_GRAPH=true
             SERVICE=true
             CONSOLE=true
+            PLUGINS=true
           fi
 
           echo "js=$JS" >> "$GITHUB_OUTPUT"
@@ -236,13 +252,14 @@ jobs:
           echo "module_graph=$MODULE_GRAPH" >> "$GITHUB_OUTPUT"
           echo "service=$SERVICE" >> "$GITHUB_OUTPUT"
           echo "console=$CONSOLE" >> "$GITHUB_OUTPUT"
+          echo "plugins=$PLUGINS" >> "$GITHUB_OUTPUT"
 
   js:
     needs: changes
     if: github.event_name == 'workflow_dispatch' || github.event_name == 'merge_group' || needs.changes.outputs.js == 'true'
     permissions:
       contents: read
-      pull-requests: write
+      pull-requests: read
     name: Bench JS / ${{ matrix.package }}
     runs-on: depot-ubuntu-24.04-arm-16
     strategy:
@@ -255,6 +272,7 @@ jobs:
       - name: Checkout PR Branch
         uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
         with:
+          persist-credentials: false
           ref: ${{ github.event.pull_request.head.sha || github.sha }}
 
       - name: Install toolchain
@@ -274,7 +292,7 @@ jobs:
           CARGO_BUILD_JOBS: 3 # Default is 4 (equals to the vCPU count of the runner), which leads OOM on cargo build
 
       - name: Run the benchmarks
-        uses: CodSpeedHQ/action@373d6868929f444bc08d901fd0eb0ad52a8875ea # v5.2.1
+        uses: CodSpeedHQ/action@c4fd08a3a159bd0cc208da1e0edf32b8c47d75e5 # v5.4.0
         timeout-minutes: 50
         with:
           mode: simulation
@@ -286,13 +304,14 @@ jobs:
     if: github.event_name == 'workflow_dispatch' || github.event_name == 'merge_group' || needs.changes.outputs.service == 'true'
     permissions:
       contents: read
-      pull-requests: write
+      pull-requests: read
     name: Bench Service
     runs-on: depot-ubuntu-24.04-arm-16
     steps:
       - name: Checkout PR Branch
         uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
         with:
+          persist-credentials: false
           ref: ${{ github.event.pull_request.head.sha || github.sha }}
 
       - name: Install toolchain
@@ -307,16 +326,61 @@ jobs:
 
       - name: Compile
         timeout-minutes: 20
-        run: cargo codspeed build -p biome_service --bench pull_diagnostics --features type_inference
+        # PR runs check out the head SHA, which may predate newer bench targets.
+        run: |
+          benches=(--bench pull_diagnostics)
+          if [ -f crates/biome_service/benches/format_embedded.rs ]; then
+            benches+=(--bench format_embedded)
+          fi
+          cargo codspeed build -p biome_service "${benches[@]}" --features type_inference,js_embeds
         env:
           CARGO_BUILD_JOBS: 3
 
       - name: Run the benchmarks
-        uses: CodSpeedHQ/action@373d6868929f444bc08d901fd0eb0ad52a8875ea # v5.2.1
+        uses: CodSpeedHQ/action@c4fd08a3a159bd0cc208da1e0edf32b8c47d75e5 # v5.4.0
         timeout-minutes: 50
         with:
           mode: simulation
-          run: cargo codspeed run -p biome_service --bench pull_diagnostics
+          run: cargo codspeed run -p biome_service
+          token: ${{ secrets.CODSPEED_TOKEN }}
+
+  plugins:
+    needs: changes
+    if: github.event_name == 'workflow_dispatch' || github.event_name == 'merge_group' || needs.changes.outputs.plugins == 'true'
+    permissions:
+      contents: read
+      pull-requests: read
+    name: Bench Plugins
+    runs-on: depot-ubuntu-24.04-arm-16
+    steps:
+      - name: Checkout PR Branch
+        uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          persist-credentials: false
+          ref: ${{ github.event.pull_request.head.sha || github.sha }}
+
+      - name: Install toolchain
+        uses: moonrepo/setup-rust@abb2d32350334249b178c401e5ec5836e0cd88d3 # v1.3.0
+        with:
+          channel: stable
+          cache-target: release
+          bins: cargo-codspeed
+          cache-base: main
+        env:
+          GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+
+      - name: Compile
+        timeout-minutes: 20
+        run: cargo codspeed build -p biome_plugin_loader --bench plugins --features js_plugin
+        env:
+          CARGO_BUILD_JOBS: 3
+
+      - name: Run the benchmarks
+        uses: CodSpeedHQ/action@c4fd08a3a159bd0cc208da1e0edf32b8c47d75e5 # v5.4.0
+        timeout-minutes: 50
+        with:
+          mode: simulation
+          run: cargo codspeed run -p biome_plugin_loader --bench plugins
           token: ${{ secrets.CODSPEED_TOKEN }}
 
   console:
@@ -324,7 +388,7 @@ jobs:
     if: github.event_name == 'workflow_dispatch' || github.event_name == 'merge_group' || needs.changes.outputs.console == 'true'
     permissions:
       contents: read
-      pull-requests: write
+      pull-requests: read
     name: Bench Console
     runs-on: depot-ubuntu-24.04-arm-16
     strategy:
@@ -338,7 +402,7 @@ jobs:
     if: github.event_name == 'workflow_dispatch' || github.event_name == 'merge_group' || needs.changes.outputs.json == 'true'
     permissions:
       contents: read
-      pull-requests: write
+      pull-requests: read
     name: Bench JSON / ${{ matrix.package }}
     runs-on: depot-ubuntu-24.04-arm-16
     strategy:
@@ -354,7 +418,7 @@ jobs:
     if: github.event_name == 'workflow_dispatch' || github.event_name == 'merge_group' || needs.changes.outputs.yaml == 'true'
     permissions:
       contents: read
-      pull-requests: write
+      pull-requests: read
     name: Bench YAML
     runs-on: depot-ubuntu-24.04-arm-16
     strategy:
@@ -369,7 +433,7 @@ jobs:
     if: github.event_name == 'workflow_dispatch' || github.event_name == 'merge_group' || needs.changes.outputs.css == 'true'
     permissions:
       contents: read
-      pull-requests: write
+      pull-requests: read
     name: Bench CSS / ${{ matrix.package }}
     runs-on: depot-ubuntu-24.04-arm-16
     strategy:
@@ -385,7 +449,7 @@ jobs:
     if: github.event_name == 'workflow_dispatch' || github.event_name == 'merge_group' || needs.changes.outputs.html == 'true'
     permissions:
       contents: read
-      pull-requests: write
+      pull-requests: read
     name: Bench HTML / ${{ matrix.package }}
     runs-on: depot-ubuntu-24.04-arm-16
     strategy:
@@ -401,7 +465,7 @@ jobs:
     if: github.event_name == 'workflow_dispatch' || github.event_name == 'merge_group' || needs.changes.outputs.graphql == 'true'
     permissions:
       contents: read
-      pull-requests: write
+      pull-requests: read
     name: Bench GraphQL / ${{ matrix.package }}
     runs-on: depot-ubuntu-24.04-arm-16
     strategy:
@@ -416,7 +480,7 @@ jobs:
     if: github.event_name == 'workflow_dispatch' || github.event_name == 'merge_group' || needs.changes.outputs.markdown == 'true'
     permissions:
       contents: read
-      pull-requests: write
+      pull-requests: read
     name: Bench Markdown / ${{ matrix.package }}
     runs-on: depot-ubuntu-24.04-arm-16
     strategy:
@@ -429,6 +493,7 @@ jobs:
       - name: Checkout PR Branch
         uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
         with:
+          persist-credentials: false
           ref: ${{ github.event.pull_request.head.sha || github.sha }}
 
       - name: Install toolchain
@@ -448,7 +513,7 @@ jobs:
           CARGO_BUILD_JOBS: 3
 
       - name: Run the benchmarks
-        uses: CodSpeedHQ/action@373d6868929f444bc08d901fd0eb0ad52a8875ea # v5.2.1
+        uses: CodSpeedHQ/action@c4fd08a3a159bd0cc208da1e0edf32b8c47d75e5 # v5.4.0
         timeout-minutes: 50
         with:
           mode: simulation
@@ -460,7 +525,7 @@ jobs:
     if: github.event_name == 'workflow_dispatch' || github.event_name == 'merge_group' || needs.changes.outputs.grit == 'true'
     permissions:
       contents: read
-      pull-requests: write
+      pull-requests: read
     name: Bench GritQL
     runs-on: depot-ubuntu-24.04-arm-16
     strategy:
@@ -474,13 +539,14 @@ jobs:
     if: github.event_name == 'workflow_dispatch' || github.event_name == 'merge_group' || needs.changes.outputs.tailwind == 'true'
     permissions:
       contents: read
-      pull-requests: write
+      pull-requests: read
     name: Bench Tailwind
     runs-on: depot-ubuntu-24.04-arm-16
     strategy:
       matrix:
         package:
           - biome_tailwind_parser
+          - biome_tailwind_logic
     steps: *bench_steps
 
   configuration:
@@ -488,7 +554,7 @@ jobs:
     if: github.event_name == 'workflow_dispatch' || github.event_name == 'merge_group' || needs.changes.outputs.configuration == 'true'
     permissions:
       contents: read
-      pull-requests: write
+      pull-requests: read
     name: Bench Configuration
     runs-on: depot-ubuntu-24.04-arm-16
     strategy:
@@ -502,7 +568,7 @@ jobs:
     if: github.event_name == 'workflow_dispatch' || github.event_name == 'merge_group' || needs.changes.outputs.manifests == 'true'
     permissions:
       contents: read
-      pull-requests: write
+      pull-requests: read
     name: Bench Manifests
     runs-on: depot-ubuntu-24.04-arm-16
     strategy:
@@ -516,7 +582,7 @@ jobs:
     if: github.event_name == 'workflow_dispatch' || github.event_name == 'merge_group' || needs.changes.outputs.module_graph == 'true'
     permissions:
       contents: read
-      pull-requests: write
+      pull-requests: read
     name: Bench Module Graph
     runs-on: depot-ubuntu-24.04-arm-16
     strategy:

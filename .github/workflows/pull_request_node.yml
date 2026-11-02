@@ -6,15 +6,15 @@ on:
     branches:
       - main
     paths: # Only run when changes are made to Rust crates or Node.js packages
-      - "crates/**"
-      - "packages/@biomejs/**"
-      - "Cargo.toml"
-      - "Cargo.lock"
-      - "package.json"
-      - "pnpm-lock.yaml"
-      - "rust-toolchain.toml"
-      - ".cargo/config.toml"
-      - ".github/workflows/pull_request_node.yml"
+      - 'crates/**'
+      - 'packages/@biomejs/**'
+      - 'Cargo.toml'
+      - 'Cargo.lock'
+      - 'package.json'
+      - 'pnpm-lock.yaml'
+      - 'rust-toolchain.toml'
+      - '.cargo/config.toml'
+      - '.github/workflows/pull_request_node.yml'
 
 # Cancel jobs when the PR is updated
 concurrency:
@@ -43,7 +43,7 @@ jobs:
       - name: Build main binary
         run: cargo build -p biome_cli --release
       - name: Install Node.js
-        uses: actions/setup-node@820762786026740c76f36085b0efc47a31fe5020 # v7.0.0
+        uses: actions/setup-node@949feb2413d6458794dcd2491c4babbbce0c15c1 # v7.1.0
         with:
           node-version: 24.21.0
       - name: Cache pnpm modules

@@ -1,3 +1,4 @@
+use crate::commands::inspect::InspectionAdvice;
 use biome_console::fmt::Formatter;
 use biome_console::markup;
 use biome_diagnostics::advice::ListAdvice;
@@ -62,6 +63,18 @@ pub enum CliDiagnostic {
     Report(ReportDiagnostic),
     /// Emitted when there's an error emitted when using stdin mode
     Stdin(StdinDiagnostic),
+    /// Plugin inspection results containing resolution errors.
+    InspectionError(InspectionError),
+}
+
+#[derive(Debug, Diagnostic)]
+#[diagnostic(category = "configuration", severity = Error)]
+pub struct InspectionError {
+    #[message]
+    #[description]
+    message: MessageAndDescription,
+    #[advice]
+    advice: InspectionAdvice,
 }
 
 #[derive(Debug, Diagnostic)]
@@ -165,6 +178,7 @@ pub struct CheckError {
     category: &'static Category,
 
     #[message]
+    #[description]
     message: MessageAndDescription,
 }
 
@@ -308,6 +322,24 @@ impl Advices for CliAdvice {
 }
 
 impl CliDiagnostic {
+    pub(crate) fn inspection_error(
+        message: biome_console::MarkupBuf,
+        advice: InspectionAdvice,
+    ) -> Self {
+        Self::InspectionError(InspectionError {
+            message: message.into(),
+            advice,
+        })
+    }
+
+    /// Returned when a command-line argument cannot be parsed.
+    pub fn parse_error(message: impl Into<String>) -> Self {
+        Self::ParseError(ParseDiagnostic {
+            source: None,
+            message: MessageAndDescription::from(message.into()),
+        })
+    }
+
     /// Returned when a subcommand is called with an unsupported combination of arguments
     pub fn incompatible_arguments(
         first_argument: impl Into<String>,
@@ -534,6 +566,17 @@ impl Diagnostic for StdinDiagnostic {
         match self {
             Self::NotFormatted => Severity::Error,
             Self::NoExtension => Severity::Warning,
+        }
+    }
+
+    fn description(&self, fmt: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        match self {
+            Self::NotFormatted => {
+                fmt.write_str("The contents aren't fixed. Use the `--write` flag to fix them.")
+            }
+            Self::NoExtension => fmt.write_str(
+                "The file passed via --stdin-file-path doesn't have an extension. Biome needs a file extension to know how to handle the file.",
+            ),
         }
     }
 

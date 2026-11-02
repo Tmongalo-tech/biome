@@ -23,7 +23,6 @@ biome_css_syntax            = { workspace = true }
 biome_db                    = { workspace = true }
 biome_deserialize           = { workspace = true }
 biome_diagnostics.workspace = true
-biome_embeds                = { workspace = true }
 biome_fs                    = { workspace = true }
 biome_graphql_analyze       = { workspace = true }
 biome_graphql_parser        = { workspace = true }
@@ -47,12 +46,22 @@ biome_module_graph          = { workspace = true }
 biome_parser                = { workspace = true }
 biome_project_layout        = { workspace = true }
 biome_rowan                 = { workspace = true }
-biome_service               = {
-  workspace = true,
-  features  = ["lang_css", "lang_graphql", "lang_html", "lang_js", "lang_json", "lang_md", "lang_yaml"]
-}
+biome_ruledoc               = { workspace = true }
+biome_service               = { workspace = true, features = [
+  "html_embeds",
+  "lang_css",
+  "lang_graphql",
+  "lang_html",
+  "lang_js",
+  "lang_json",
+  "lang_md",
+  "lang_yaml"
+] }
 biome_test_utils            = { workspace = true, features = ["lang_css", "lang_html", "lang_js", "module_graph"] }
 biome_text_edit             = { workspace = true }
+biome_yaml_analyze          = { workspace = true }
+biome_yaml_parser           = { workspace = true }
+biome_yaml_syntax           = { workspace = true }
 camino                      = { workspace = true }
 
 [lints]

@@ -75,6 +75,49 @@ Cross-module relationships must remain references to data owned by the source
 module. Do not copy or clone inferred data from another module into the current
 module, including behind `Arc`.
 
+`ResolutionCtx` protects itself against endless recursion in two ways: it
+remembers which types it is currently resolving, and it gives up after a fixed
+number of nested steps. It also remembers the types it has already resolved.
+All of this is stored inside one context, so a newly created context starts
+with none of it.
+
+For this reason, do not create a new context in the middle of a resolution and
+keep resolving through it. The new context does not know what the old one was
+working on. Two declarations that refer to each other can then keep resolving
+each other until the program runs out of stack space and crashes.
+
+Create a new context only where something outside the context still limits the
+work:
+
+- at the start of a tracked query. If the same query is requested again before
+  it finishes, Salsa returns the query's fallback result instead of running it
+  again;
+- when following an import, because each import uses up part of a limited
+  import budget;
+- when sharing the declaration evaluator. It keeps one record of which
+  declarations depend on which, across all modules, and uses it to detect
+  loops;
+- when looking up a member of a namespace import, because that lookup has its
+  own step limit that decreases with each step.
+
+To resolve a type that belongs to another module, use a helper that follows one
+of these paths, such as `ResolutionCtx::resolve_foreign_type_id`. For example,
+in these two files each interface's type parameter refers to the other file's
+interface:
+
+```ts
+// a.ts
+import type { B } from "./b";
+export interface A<T extends B<any>> {}
+
+// b.ts
+import type { A } from "./a";
+export interface B<U extends A<any>> {}
+```
+
+Resolving `A`'s type parameter requires `B`, and resolving `B`'s type parameter
+requires `A`. If each step creates a new context, no context notices the loop.
+
 ## Vocabulary
 
 | Term | Meaning |
@@ -153,8 +196,9 @@ Like an analyzer rule's metadata trait, `TypeInferenceRequestMetadata` is
 implemented by each request type and required by `TypeInferenceRequest`. A
 request therefore cannot compile without its static identity.
 
-Request IDs are stable maintenance identifiers printed in profiles. Use
-lowercase words separated by hyphens after the `request.` prefix:
+Request IDs are stable identities used to aggregate records for the same
+request contract. Use lowercase words separated by hyphens after the
+`request.` prefix:
 
 ```text
 request.expected-call-argument-type
@@ -319,10 +363,10 @@ line, and symbol adjacent to the canonical `execute` method. Inference profiles
 use this reference to lead maintainers from a reported source range to the
 implementation that orchestrated the work.
 
-Query families and whole-module reasons also have stable IDs. Each recorded
-query execution retains its own implementation reference, so multiple query
-bodies can share one family. Code references correspond to the Biome version
-that produced a report.
+Each recorded query execution retains its own implementation reference, so
+multiple query bodies can share one family. Whole-module records retain the
+implementation responsible for widening inference to complete tables. Code
+references correspond to the Biome version that produced a report.
 
 Do not read `ModuleInfo::path` from inside a tracked query for profiling. The
 path is a Salsa input, so reading it changes the query's dependency set. The
@@ -332,17 +376,23 @@ request and carries only module identities and `TextRange` values.
 
 ## Profiling inference
 
-Maintainers can ask a user to reproduce CLI inference work with the hidden
-maintenance option:
+Use `--profile-type-inference` to inspect CLI inference work:
 
 ```shell
 biome lint --profile-type-inference path/to/reproduction
 biome check --profile-type-inference path/to/reproduction
 ```
 
-The default report ranks requests by consumer, tracked query bodies, and
-whole-module widening. Use `--verbose` to show every recorded source range and
-implementation reference.
+The report groups records by source file. The default output shows the ten files
+with the highest cumulative request time. Within each file, it shows the top
+five request groups, top eight query groups, and top five whole-module groups.
+It includes the total number of groups, source records, and completed executions
+so omitted work remains visible.
+
+Use `--verbose` to show detailed metrics and implementation references for the
+top five request records, top eight query records, and top five whole-module
+records in each file. Verbose output includes every file while retaining the
+per-file limits.
 
 Request and query timings are inclusive and must not be added together. A high
 request count with few tracked query executions usually indicates Salsa reuse.
@@ -363,7 +413,8 @@ Cover the cases relevant to the request or query:
 - named, default, and namespace imports;
 - named, blanket, and namespace re-exports;
 - missing and ambiguous exports;
-- import and declaration cycles;
+- import and declaration cycles, including cycles through generic parameter
+  constraints and defaults declared in different modules;
 - disabled inference;
 - unsupported input shapes;
 - traversal budget exhaustion.
@@ -416,6 +467,9 @@ Before approving a request or query, verify:
       distinguished.
 - [ ] Recursive traversal has a budget, and recursively dependent tracked
       queries define cycle behavior.
+- [ ] Every `ResolutionCtx` created during resolution sits behind a tracked
+      query, a spent import or step budget, or the shared declaration
+      evaluator.
 - [ ] Namespace and import-chain breadth were reviewed.
 - [ ] Whole-module inference is absent or explicitly justified.
 - [ ] Cross-module data remains owned by its source module.

@@ -1,18 +1,19 @@
 <div align="center">
   <picture>
-    <source media="(prefers-color-scheme: dark)" srcset="https://raw.githubusercontent.com/biomejs/resources/main/svg/slogan-dark-transparent.svg">
-    <source media="(prefers-color-scheme: light)" srcset="https://raw.githubusercontent.com/biomejs/resources/main/svg/slogan-light-transparent.svg">
-    <img alt="Shows the banner of Biome, with its logo and the phrase 'Biome - Toolchain of the web'." src="https://raw.githubusercontent.com/biomejs/resources/main/svg/slogan-light-transparent.svg" width="700">
+    <source media="(prefers-color-scheme: dark)" srcset="https://raw.githubusercontent.com/biomejs/resources/main/svg/slogan-dark-transparent.svg" />
+    <source media="(prefers-color-scheme: light)" srcset="https://raw.githubusercontent.com/biomejs/resources/main/svg/slogan-light-transparent.svg" />
+    <img alt="Shows the banner of Biome, with its logo and the phrase 'Biome - Toolchain of the web'." src="https://raw.githubusercontent.com/biomejs/resources/main/svg/slogan-light-transparent.svg" width="700" />
   </picture>
+</div>
 
   <br>
   <br>
 
-  [![CI on main][ci-badge]][ci-url]
-  [![Discord chat][discord-badge]][discord-url]
-  [![npm version][npm-badge]][npm-url]
-  [![VSCode version][vscode-badge]][vscode-url]
-  [![Open VSX version][open-vsx-badge]][open-vsx-url]
+[![CI on main][ci-badge]][ci-url]
+[![Discord chat][discord-badge]][discord-url]
+[![npm version][npm-badge]][npm-url]
+[![VSCode version][vscode-badge]][vscode-url]
+[![Open VSX version][open-vsx-badge]][open-vsx-url]
 
   [ci-badge]: https://github.com/biomejs/biome/actions/workflows/main.yml/badge.svg
   [ci-url]: https://github.com/biomejs/biome/actions/workflows/main.yml
@@ -29,16 +30,14 @@
      For example given below is the same order as these files appear on page:
      https://github.com/biomejs/biome/tree/main/packages/@biomejs/biome -->
 
-  [हिन्दी](https://github.com/biomejs/biome/blob/main/packages/%40biomejs/biome/README.hi.md) | [English](https://github.com/biomejs/biome/blob/main/packages/%40biomejs/biome/README.md) | [Español](https://github.com/biomejs/biome/blob/main/packages/%40biomejs/biome/README.es.md) | [Français](https://github.com/biomejs/biome/blob/main/packages/%40biomejs/biome/README.fr.md) | 繁體中文 | [简体中文](https://github.com/biomejs/biome/blob/main/packages/%40biomejs/biome/README.zh-CN.md) | [日本語](https://github.com/biomejs/biome/blob/main/packages/%40biomejs/biome/README.ja.md) | [Polski](https://github.com/biomejs/biome/blob/main/packages/%40biomejs/biome/README.pl.md) | [Português do Brasil](https://github.com/biomejs/biome/blob/main/packages/%40biomejs/biome/README.pt-BR.md) | [한국어](https://github.com/biomejs/biome/blob/main/packages/%40biomejs/biome/README.kr.md) | [Русский](https://github.com/biomejs/biome/blob/main/packages/%40biomejs/biome/README.ru.md) | [Українська](https://github.com/biomejs/biome/blob/main/packages/%40biomejs/biome/README.uk.md)
-</div>
-
+[हिन्दी](https://github.com/biomejs/biome/blob/main/packages/%40biomejs/biome/README.hi.md) | [English](https://github.com/biomejs/biome/blob/main/packages/%40biomejs/biome/README.md) | [Español](https://github.com/biomejs/biome/blob/main/packages/%40biomejs/biome/README.es.md) | [Français](https://github.com/biomejs/biome/blob/main/packages/%40biomejs/biome/README.fr.md) | 繁體中文 | [简体中文](https://github.com/biomejs/biome/blob/main/packages/%40biomejs/biome/README.zh-CN.md) | [日本語](https://github.com/biomejs/biome/blob/main/packages/%40biomejs/biome/README.ja.md) | [Polski](https://github.com/biomejs/biome/blob/main/packages/%40biomejs/biome/README.pl.md) | [Português do Brasil](https://github.com/biomejs/biome/blob/main/packages/%40biomejs/biome/README.pt-BR.md) | [한국어](https://github.com/biomejs/biome/blob/main/packages/%40biomejs/biome/README.kr.md) | [Русский](https://github.com/biomejs/biome/blob/main/packages/%40biomejs/biome/README.ru.md) | [Українська](https://github.com/biomejs/biome/blob/main/packages/%40biomejs/biome/README.uk.md)
 <br>
 
 **Biome** 是一個高效能的 Web 專案工具鏈，旨在提供開發工具以維持這些專案的健康。
 
-**Biome 是一個 [快速格式化工具](https://github.com/biomejs/benchmark#formatting)**，支援 _JavaScript_、_TypeScript_、_JSX_、_JSON_、_CSS_ 和 _GraphQL_，其 **與 _Prettier_ 的相容性達到 [97%](https://algora.io/challenges/prettier)**。
+**Biome 是一個 [快速格式化工具](https://github.com/biomejs/benchmark#formatting)**，支援 _JavaScript_、_TypeScript_、_JSX_、_JSON_、_CSS_、_GraphQL_、_Markdown_、_YAML_ 和 _SCSS_，其 **與 _Prettier_ 的相容性達到 [97%](https://algora.io/challenges/prettier)**。
 
-**Biome 是一個 [高效能的語法檢查工具](https://github.com/biomejs/benchmark#linting)**，支援 _JavaScript_、_TypeScript_、_JSX_、_CSS_ 和 _GraphQL_，擁有來自 ESLint、typescript-eslint 和 [其他來源](https://github.com/biomejs/biome/discussions/3)的 **[超過 500 條規則](https://biomejs.dev/linter/javascript/rules)**。
+**Biome 是一個 [高效能的語法檢查工具](https://github.com/biomejs/benchmark#linting)**，支援 _JavaScript_、_TypeScript_、_JSX_、_CSS_、_GraphQL_、_Markdown_、_YAML_ 和 _SCSS_，擁有來自 ESLint、typescript-eslint 和 [其他來源](https://github.com/biomejs/biome/discussions/3)的 **[超過 500 條規則](https://biomejs.dev/linter/javascript/rules)**。
 它 **輸出詳細且具上下文的診斷資訊**，幫助你改進程式碼並成為更好的程式設計師！
 
 **Biome** 從一開始就設計為可在 [編輯器中互動使用](https://biomejs.dev/editors/first-party-extensions/)。
@@ -125,11 +124,11 @@ Biome 提供了一個簡單的贊助計劃，允許公司在各種開發者中�
   <tbody>
     <tr>
       <td align="center" valign="middle">
-        <a href="https://codspeed.io/?utm_source=biome&utm_medium=readme" target="_blank">
+        <a href="https://codspeed.io/?utm_source=oss-sponsorship&utm_medium=biome" target="_blank">
           <picture>
-            <source media="(prefers-color-scheme: light)" srcset="https://biomejs.dev/_astro/codspeed-logo-light.NPF02X9E.svg" />
-            <source media="(prefers-color-scheme: dark)" srcset="https://biomejs.dev/_astro/codspeed-logo-dark.DqfyMRf2.svg" />
-            <img src="https://biomejs.dev/_astro/codspeed-logo-light.NPF02X9E.svg" width="300" alt="CodSpeed logo" />
+            <source media="(prefers-color-scheme: dark)" srcset="https://codspeed.io/codspeed-logo-dark.svg">
+            <source media="(prefers-color-scheme: light)" srcset="https://codspeed.io/codspeed-logo-light.svg">
+            <img alt="CodSpeed logo" src="https://codspeed.io/codspeed-logo-light.svg" width="300">
           </picture>
         </a>
       </td>
@@ -148,6 +147,9 @@ Biome 提供了一個簡單的贊助計劃，允許公司在各種開發者中�
       <td align="center" valign="middle">
         <a href="https://www.cloudflare.com/?utm_source=biome&utm_medium=readme" target="_blank"><img src="https://avatars.githubusercontent.com/u/314135?s=200&v=4" height="100" alt="Cloudflare logo"></a>
       </td>
+      <td align="center" valign="middle">
+        <a href="https://github.com/syntaxfm" target="_blank"><img src="https://avatars.githubusercontent.com/u/130389858?s=200&v=4" height="100" alt="SyntaxFM logo"></a>
+      </td>
     </tr>
   </tbody>
 </table>
@@ -162,9 +164,6 @@ Biome 提供了一個簡單的贊助計劃，允許公司在各種開發者中�
       </td>
       <td align="center" valign="middle">
         <a href="http://rstudio.org/?utm_source=biome&utm_medium=readme" target="_blank"><img src="https://avatars.githubusercontent.com/u/513560?s=200&v=4" width="80" alt="RStudio logo"></a>
-      </td>
-      <td align="center" valign="middle">
-        <a href="https://pennylane.com/?utm_source=biome&utm_medium=readme" target="_blank"><img src="https://avatars.githubusercontent.com/u/57875210?s=200&v=4" width="80" alt="Pennylane logo"></a>
       </td>
       <td align="center" valign="middle">
         <a href="https://jetbrains.com/?utm_source=biome&utm_medium=readme" target="_blank"><img src="https://resources.jetbrains.com/storage/products/company/brand/logos/jetbrains.png" width="100" alt="JetBrains logo"></a>

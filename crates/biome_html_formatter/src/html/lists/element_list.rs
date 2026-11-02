@@ -200,7 +200,7 @@ use crate::{
 };
 #[cfg(debug_assertions)]
 use biome_console::{ColorMode, ConsoleExt, EnvConsole, markup};
-use biome_formatter::{FormatRuleWithOptions, GroupId, prelude::*};
+use biome_formatter::{FormatRuleWithOptions, GroupId, rowan::prelude::*};
 use biome_formatter::{format_args, write};
 use biome_html_syntax::{
     AnyHtmlContent, AnyHtmlElement, AnyHtmlTextExpression, HtmlClosingElement,
@@ -786,7 +786,8 @@ impl FormatHtmlElementList {
                         };
 
                         if is_soft_break {
-                            write!(f, [soft_line_break()])?;
+                            // The newline renders as a space, so joining the lines must keep it.
+                            write!(f, [soft_line_break_or_space()])?;
                         } else {
                             child_breaks = true;
                             write!(f, [hard_line_break()])?;

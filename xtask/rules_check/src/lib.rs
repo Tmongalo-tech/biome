@@ -3,7 +3,7 @@
 //!
 use std::any::TypeId;
 use std::collections::{BTreeMap, HashMap};
-use std::fmt::{Display, Formatter, Write};
+use std::fmt::{Display, Formatter};
 use std::mem;
 use std::str::FromStr;
 
@@ -22,9 +22,10 @@ use biome_json_syntax::JsonLanguage;
 use biome_markdown_syntax::MarkdownLanguage;
 use biome_ruledoc_utils::{
     AnalyzerServicesBuilder, CodeBlock, DiagnosticConsoleWriter, DiagnosticWriter,
-    OptionsParsingMode, RuleCodeAnalyzer, parse_rule_options,
+    OptionsParsingMode, RuleCodeAnalyzer, RuleDocumentItem, parse_rule_document,
+    parse_rule_options,
 };
-use pulldown_cmark::{CodeBlockKind, Event, HeadingLevel, Parser, Tag, TagEnd};
+use biome_yaml_syntax::YamlLanguage;
 
 #[derive(Debug)]
 struct Errors {
@@ -75,6 +76,17 @@ pub fn check_rules() -> anyhow::Result<()> {
             {
                 self.errors.push(Errors::new(format!(
                     "The rule '{rule_name}' has an issue number set to '{issue_number}'. The presence of an issue number indicates that the rule is not yet completed. Rules that have an issue number must belong to the 'nursery' group. Change the group of the rule to 'nursery' or remove the issue number."
+                )));
+            }
+
+            if R::METADATA.domains.contains(&RuleDomain::Tailwind)
+                && !R::METADATA
+                    .docs
+                    .lines()
+                    .any(|line| line.trim() == "## Recognized class strings")
+            {
+                self.errors.push(Errors::new(format!(
+                    "The rule '{rule_name}' belongs to the Tailwind domain but its documentation has no '## Recognized class strings' section. Add the section used by the other Tailwind rules, which links to the top-level `tailwind` configuration."
                 )));
             }
 
@@ -235,6 +247,16 @@ pub fn check_rules() -> anyhow::Result<()> {
         }
     }
 
+    impl RegistryVisitor<YamlLanguage> for LintRulesVisitor {
+        fn record_rule<R>(&mut self)
+        where
+            R: Rule<Options: Default, Query: Queryable<Language = YamlLanguage, Output: Clone>>
+                + 'static,
+        {
+            self.push_rule::<R, <R::Query as Queryable>::Language>()
+        }
+    }
+
     let mut visitor = LintRulesVisitor::default();
     biome_js_analyze::visit_registry(&mut visitor);
     biome_json_analyze::visit_registry(&mut visitor);
@@ -242,6 +264,7 @@ pub fn check_rules() -> anyhow::Result<()> {
     biome_graphql_analyze::visit_registry(&mut visitor);
     biome_html_analyze::visit_registry(&mut visitor);
     biome_markdown_analyze::visit_registry(&mut visitor);
+    biome_yaml_analyze::visit_registry(&mut visitor);
 
     let LintRulesVisitor { groups, errors } = visitor;
     if !errors.is_empty() {
@@ -328,7 +351,7 @@ fn parse_documentation(
     rule_metadata: RuleMetadata,
     category: RuleCategory,
 ) -> anyhow::Result<()> {
-    let parser = Parser::new(rule_metadata.docs);
+    let document = parse_rule_document(rule_metadata.docs).into_document();
 
     let mut diagnostics_writer = DiagnosticConsoleWriter::default();
 
@@ -339,69 +362,123 @@ fn parse_documentation(
         rule_metadata.domains.contains(&RuleDomain::Types),
     );
 
+    let mut html_checker = HtmlTagChecker::default();
+
     // Track the last configuration options block that was encountered
     let mut last_options: Option<Configuration> = None;
 
-    // Tracks the content of the current code block if it's using a
-    // language supported for analysis
-    let mut language = None;
-    for event in parser {
-        match event {
-            // CodeBlock-specific handling
-            Event::Start(Tag::CodeBlock(CodeBlockKind::Fenced(meta))) => {
-                // Track the content of code blocks to pass them through the analyzer
-                let test = CodeBlock::from_str(meta.as_ref())?;
-                language = Some((test, String::new()));
-            }
-            Event::End(TagEnd::CodeBlock) => {
-                if let Some((test, block)) = language.take() {
-                    if test.options != OptionsParsingMode::NoOptions {
-                        last_options = parse_rule_options(
-                            group,
-                            &rule_metadata,
-                            category,
-                            &test,
-                            &block,
-                            &mut diagnostics_writer,
-                        )?;
-                    } else {
-                        if let Some(file_path) = test.explicit_file_path() {
-                            test_runner
-                                .file_system
-                                .insert(file_path.to_string(), block.clone());
-                        }
-
-                        test_runner.pending_tests.push(PendingTest {
-                            test,
-                            block,
-                            options_snapshot: last_options.clone(),
-                        });
+    for item in document.into_items() {
+        match item {
+            RuleDocumentItem::FencedCodeBlock(code_block) => {
+                let test = CodeBlock::from_str(&code_block.info)?;
+                let block = code_block.body;
+                if test.options != OptionsParsingMode::NoOptions {
+                    last_options = parse_rule_options(
+                        group,
+                        &rule_metadata,
+                        category,
+                        &test,
+                        &block,
+                        &mut diagnostics_writer,
+                    )?;
+                } else {
+                    if let Some(file_path) = test.explicit_file_path() {
+                        test_runner
+                            .file_system
+                            .insert(file_path.to_string(), block.clone());
                     }
+
+                    test_runner.pending_tests.push(PendingTest {
+                        test,
+                        block,
+                        options_snapshot: last_options.clone(),
+                    });
                 }
             }
-            Event::Text(text) => {
-                if let Some((_, block)) = &mut language {
-                    write!(block, "{text}")?;
+            RuleDocumentItem::RawHtml(html) => {
+                for source in html.source_fragments {
+                    html_checker.push(&source);
                 }
             }
-            Event::Start(Tag::Heading { level, .. }) => {
+            RuleDocumentItem::Heading(heading) if heading.level <= 4 => {
                 // Major headings delineate testable sections. When we encounter a new section,
                 // run all tests from the previous section with the complete file system.
-                if matches!(
-                    level,
-                    HeadingLevel::H1 | HeadingLevel::H2 | HeadingLevel::H3 | HeadingLevel::H4
-                ) {
-                    test_runner.run_pending_tests()?;
-                }
+                test_runner.run_pending_tests()?;
             }
-            // We don't care other events
-            _ => {}
+            RuleDocumentItem::Heading(_) => {}
         }
     }
 
     test_runner.run_pending_tests()?;
 
+    if let Err(message) = html_checker.finish() {
+        bail!(
+            "The documentation of '{group}/{rule}' contains invalid HTML outside of a code block: {message}. The website renders rule docs as MDX, which fails to build on unclosed tags. Wrap the tag in backticks (e.g. `<div>`), or close it.",
+            rule = rule_metadata.name
+        );
+    }
+
     Ok(())
+}
+
+/// Checks that the raw HTML in a rule's documentation is valid MDX: every opening tag
+/// must be self-closing or have a matching closing tag.
+#[derive(Default)]
+struct HtmlTagChecker {
+    open_tags: Vec<String>,
+    error: Option<String>,
+}
+
+impl HtmlTagChecker {
+    fn push(&mut self, html: &str) {
+        if self.error.is_some() {
+            return;
+        }
+
+        let mut rest = html;
+        while let Some(start) = rest.find('<') {
+            rest = &rest[start + 1..];
+            if let Some(comment) = rest.strip_prefix("!--") {
+                rest = comment.find("-->").map_or("", |end| &comment[end + 3..]);
+                continue;
+            }
+
+            let Some(end) = rest.find('>') else {
+                self.error = Some(format!("`<{}` is never closed", rest.trim_end()));
+                return;
+            };
+            let tag = &rest[..end];
+            rest = &rest[end + 1..];
+
+            if let Some(name) = tag.strip_prefix('/') {
+                let name = name.trim();
+                match self.open_tags.pop() {
+                    Some(open) if open == name => {}
+                    Some(open) => {
+                        self.error = Some(format!("`</{name}>` doesn't match `<{open}>`"));
+                        return;
+                    }
+                    None => {
+                        self.error = Some(format!("`</{name}>` has no opening tag"));
+                        return;
+                    }
+                }
+            } else if !tag.ends_with('/') {
+                let name = tag.split_whitespace().next().unwrap_or_default();
+                self.open_tags.push(name.to_string());
+            }
+        }
+    }
+
+    fn finish(self) -> Result<(), String> {
+        if let Some(error) = self.error {
+            return Err(error);
+        }
+        match self.open_tags.first() {
+            Some(open) => Err(format!("`<{open}>` is never closed")),
+            None => Ok(()),
+        }
+    }
 }
 
 struct PendingTest {
@@ -473,5 +550,31 @@ impl TestRunner {
         }
 
         Ok(())
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    fn check_html(source: &str) -> Result<(), String> {
+        let mut checker = HtmlTagChecker::default();
+        for item in parse_rule_document(source).into_document().into_items() {
+            if let RuleDocumentItem::RawHtml(html) = item {
+                for source in html.source_fragments {
+                    checker.push(&source);
+                }
+            }
+        }
+        checker.finish()
+    }
+
+    #[test]
+    fn preserves_html_block_fragment_boundaries() {
+        assert_eq!(
+            check_html("<!--\n<div>\n-->\n"),
+            Err("`<div>` is never closed".to_string())
+        );
+        assert!(check_html("<!--\ncomment\n-->\n").is_ok());
     }
 }

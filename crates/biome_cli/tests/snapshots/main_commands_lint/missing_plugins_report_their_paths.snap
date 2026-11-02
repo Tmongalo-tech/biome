@@ -29,8 +29,8 @@ debugger
 plugin ━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━
 
   × Error(s) during loading of plugins:
-    missingOne.grit: Cannot read file.
-    missingTwo.grit: Cannot read file.
+    Biome couldn't find the plugin file missingOne.grit.
+    Biome couldn't find the plugin file missingTwo.grit.
   
 
 

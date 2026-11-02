@@ -71,9 +71,14 @@ gen-module-replacements:
 gen-configuration:
   cargo run -p xtask_codegen --features configuration -- configuration
 
-# Generates code for eslint migration
+# Generates code for eslint and stylelint migration
 gen-migrate:
   cargo run -p xtask_codegen --features configuration -- migrate-eslint
+  cargo run -p xtask_codegen --features configuration -- migrate-stylelint
+
+# Exports every lint rule and assist action as JSON, with the upstream rules they implement and the ones Biome deliberately doesn't support. Prints to stdout unless given `--out <path>`.
+export-rule-metadata *args='':
+  cargo run -p xtask_codegen --features rules_metadata -- rules-metadata {{args}}
 
 # Generates the initial files for all formatter crates
 gen-formatter *args='':
@@ -85,8 +90,7 @@ gen-global-types:
 # Generates the Tailwind CSS preset for utility class sorting
 [working-directory: 'packages/tailwindcss-config-analyzer']
 gen-tw:
-  pnpm build
-  pnpm execute
+  pnpm execute:v4
 
 # Build WASM for bundler target (development)
 build-wasm-bundler-dev:
@@ -97,8 +101,8 @@ build-wasm-bundler-dev:
     --typescript
 
 # Build WASM for bundler target (release)
-build-wasm-bundler:
-  cargo build --lib --target wasm32-unknown-unknown --release -p biome_wasm
+build-wasm-bundler *args='':
+  cargo build --lib --target wasm32-unknown-unknown --release -p biome_wasm {{args}}
   wasm-bindgen target/wasm32-unknown-unknown/release/biome_wasm.wasm \
     --out-dir packages/@biomejs/wasm-bundler \
     --no-demangle \
@@ -118,8 +122,8 @@ build-wasm-node-dev:
     --typescript
 
 # Build WASM for Node.js target (release)
-build-wasm-node:
-  cargo build --lib --target wasm32-unknown-unknown --release -p biome_wasm
+build-wasm-node *args='':
+  cargo build --lib --target wasm32-unknown-unknown --release -p biome_wasm {{args}}
   wasm-bindgen target/wasm32-unknown-unknown/release/biome_wasm.wasm \
     --out-dir packages/@biomejs/wasm-nodejs \
     --no-demangle \
@@ -224,10 +228,24 @@ new-html-vue-lintrule rulename:
   cargo run -p xtask_codegen -- new-lintrule --kind=html-vue --category=lint --name={{rulename}}
   just gen-analyzer
 
+# Creates a new yaml lint rule with the given name. Name has to be camel case.
+new-yaml-lintrule rulename:
+  cargo run -p xtask_codegen -- new-lintrule --kind=yaml --category=lint --name={{rulename}}
+  just gen-analyzer
+
+# Creates a new yaml assist rule with the given name. Name has to be camel case.
+new-yaml-assistrule rulename:
+  cargo run -p xtask_codegen -- new-lintrule --kind=yaml --category=assist --name={{rulename}}
+  just gen-analyzer
+
 # Promotes a rule from the nursery group to a new group
 move-rule rulename group:
   cargo run -p xtask_codegen -- move-rule --group={{group}} --name={{rulename}}
   cargo run -p xtask_codegen -- analyzer
+
+# Promotes nursery lint rules described by a JSON manifest
+promote-rules manifest:
+  cargo run -p xtask_codegen -- promote-rules --manifest={{manifest}}
 
 # Format Rust files and TOML files
 format:
@@ -289,6 +307,7 @@ test-lintrule rulename:
   just test-graphql-lintrule {{rulename}}
   just test-html-lintrule {{rulename}}
   just test-markdown-lintrule {{rulename}}
+  just test-yaml-lintrule {{rulename}}
 
 # Test a js lint rule. The name of the rule needs to be camel case
 test-js-lintrule rulename:
@@ -319,6 +338,11 @@ test-html-lintrule rulename:
 test-markdown-lintrule rulename:
   just _touch crates/biome_markdown_analyze/tests/spec_tests.rs
   cargo test -p biome_markdown_analyze -- {{snakecase(rulename)}} --show-output
+
+# Test a yaml lint rule. The name of the rule needs to be camel case
+test-yaml-lintrule rulename:
+  just _touch crates/biome_yaml_analyze/tests/spec_tests.rs
+  cargo test -p biome_yaml_analyze -- {{snakecase(rulename)}} --show-output
 
 # Tests a lint rule. The name of the rule needs to be camel case
 test-transformation name:

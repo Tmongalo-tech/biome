@@ -19,7 +19,7 @@ use biome_css_parser::CssParserOptions;
 #[cfg(feature = "lang_css")]
 use biome_css_syntax::AnyCssRoot;
 #[cfg(feature = "module_graph")]
-use biome_db::ParsedSource;
+use biome_db::Source;
 use biome_diagnostics::termcolor::Buffer;
 use biome_diagnostics::{DiagnosticExt, Error, PrintDiagnostic};
 #[cfg(feature = "html_embeds")]
@@ -43,7 +43,7 @@ use biome_module_graph::resolve_js_module;
 use biome_package::{Catalogs, Manifest, PackageJson, TsConfigJson, TurboJson};
 use biome_parser::diagnostic::ParseDiagnostic;
 use biome_project_layout::ProjectLayout;
-use biome_rowan::{Direction, Language, SyntaxKind, SyntaxNode, SyntaxSlot};
+use biome_rowan::{Direction, Language, SyntaxKind, SyntaxNode, SyntaxSlot, TextRange, TextSize};
 #[cfg(feature = "html_embeds")]
 use biome_service::Workspace;
 use biome_service::WorkspaceError;
@@ -95,7 +95,10 @@ pub fn create_analyzer_options<L: ServiceLanguage>(
         return options.with_configuration(analyzer_configuration);
     };
     if loaded_configuration.has_errors() {
-        let configuration_path = loaded_configuration.file_path.unwrap().clone();
+        let Some(configuration_path) = loaded_configuration.file_path().map(Utf8Path::to_path_buf)
+        else {
+            return options.with_configuration(analyzer_configuration);
+        };
         diagnostics.extend(
             loaded_configuration
                 .diagnostics
@@ -114,11 +117,7 @@ pub fn create_analyzer_options<L: ServiceLanguage>(
     } else {
         let mut settings = Settings::default();
         settings
-            .merge_with_configuration(
-                loaded_configuration.configuration,
-                None,
-                loaded_configuration.extended_configurations,
-            )
+            .merge_with_configuration_source(loaded_configuration.source)
             .unwrap();
 
         settings
@@ -144,13 +143,10 @@ pub fn load_configuration_source(
         .map(|configuration| (source, configuration))
         .ok()?;
 
-    let LoadedConfiguration {
-        configuration,
-        extended_configurations,
-        ..
-    } = loaded_configuration;
-
-    Some((configuration, extended_configurations))
+    Some((
+        loaded_configuration.resolved_configuration(),
+        loaded_configuration.extended_configurations(),
+    ))
 }
 
 /// It loads `<input_file>.options.json`
@@ -178,7 +174,7 @@ pub fn create_parser_options<L: ServiceLanguage>(
     };
 
     if loaded_configuration.has_errors() {
-        let configuration_path = loaded_configuration.file_path.unwrap().clone();
+        let configuration_path = loaded_configuration.file_path()?.to_path_buf();
         diagnostics.extend(
             loaded_configuration
                 .diagnostics
@@ -195,14 +191,9 @@ pub fn create_parser_options<L: ServiceLanguage>(
 
         Default::default()
     } else {
-        let configuration = loaded_configuration.configuration;
         let mut settings = Settings::default();
         settings
-            .merge_with_configuration(
-                configuration,
-                None,
-                loaded_configuration.extended_configurations,
-            )
+            .merge_with_configuration_source(loaded_configuration.source)
             .unwrap();
 
         let document_file_source = DocumentFileSource::from_path(
@@ -230,7 +221,10 @@ where
         return Default::default();
     };
     if loaded_configuration.has_errors() {
-        let configuration_path = loaded_configuration.file_path.unwrap().clone();
+        let Some(configuration_path) = loaded_configuration.file_path().map(Utf8Path::to_path_buf)
+        else {
+            return Default::default();
+        };
         diagnostics.extend(
             loaded_configuration
                 .diagnostics
@@ -247,14 +241,9 @@ where
 
         Default::default()
     } else {
-        let configuration = loaded_configuration.configuration;
         let mut settings = Settings::default();
         settings
-            .merge_with_configuration(
-                configuration,
-                None,
-                loaded_configuration.extended_configurations,
-            )
+            .merge_with_configuration_source(loaded_configuration.source)
             .unwrap();
 
         let document_file_source = DocumentFileSource::from_path(
@@ -280,15 +269,12 @@ fn insert_test_manifests(db: &mut WorkspaceDb, input_file: &Utf8Path) {
         let Ok(content) = std::fs::read_to_string(input_file.with_extension(manifest_name)) else {
             continue;
         };
-        let parse = biome_json_parser::parse_json(
-            &content,
-            biome_json_parser::JsonParserOptions::default()
-                .with_allow_comments()
-                .with_allow_trailing_commas(),
-        );
         let path = directory.join(manifest_name);
-        let source_index = db.insert_source(DocumentFileSource::Json(JsonFileSource::json()));
-        let parsed = ParsedSource::new(db, path.clone(), parse.into(), source_index, Vec::new());
+        let file_source = JsonFileSource::json()
+            .with_allow_comments()
+            .with_allow_trailing_commas();
+        let source_index = db.insert_source(DocumentFileSource::Json(file_source));
+        let parsed = Source::new(db, path.clone(), content.into(), source_index);
         db.insert_file(&path, parsed);
     }
 }
@@ -311,7 +297,12 @@ pub fn module_graph_for_test_file(
     let mut db = WorkspaceDb::new(Arc::new(OsFileSystem::new(dir.clone())));
     insert_test_manifests(&mut db, input_file);
 
-    let js_paths = get_js_like_paths_in_dir(&dir);
+    // Vue, Svelte and Astro files can't be parsed as plain JS. HTML-ish test
+    // files get their module graph from the workspace instead.
+    let js_paths = get_js_like_paths_in_dir(&dir)
+        .into_iter()
+        .filter(|path| !matches!(path.extension(), Some("vue" | "svelte" | "astro")))
+        .collect::<Vec<_>>();
     let js_roots = get_added_js_paths(&fs, &js_paths);
     for (path, root, semantic_model) in js_roots {
         let (module_info, _, _) = resolve_js_module(&db, root, path, semantic_model, true);
@@ -334,19 +325,12 @@ pub fn module_graph_for_test_file(
                 continue;
             };
             let content = fs.read_file_from_path(path).expect("CSS test file exists");
-            let options = if file_source.is_css_modules() {
-                CssParserOptions::default().allow_css_modules()
-            } else {
-                CssParserOptions::default()
-            };
-            let parsed = biome_css_parser::parse_css(&content, file_source, options);
             let source_index = db.insert_source(file_source.into());
-            let parsed_source = ParsedSource::new(
+            let parsed_source = Source::new(
                 &db,
                 path.as_path().to_path_buf(),
-                parsed.into(),
+                content.into(),
                 source_index,
-                Vec::new(),
             );
             db.insert_file(path.as_path(), parsed_source);
             let (module_info, _, _) = resolve_css_module(&db, root, path);
@@ -388,19 +372,12 @@ pub fn module_graph_for_css_test_file(
             continue;
         };
         let content = fs.read_file_from_path(path).expect("CSS test file exists");
-        let options = if file_source.is_css_modules() {
-            CssParserOptions::default().allow_css_modules()
-        } else {
-            CssParserOptions::default()
-        };
-        let parsed = biome_css_parser::parse_css(&content, file_source, options);
         let source_index = db.insert_source(file_source.into());
-        let parsed_source = ParsedSource::new(
+        let parsed_source = Source::new(
             &db,
             path.as_path().to_path_buf(),
-            parsed.into(),
+            content.into(),
             source_index,
-            Vec::new(),
         );
         db.insert_file(path.as_path(), parsed_source);
         let (module_info, _, _) = resolve_css_module(&db, root, path);
@@ -874,6 +851,31 @@ pub fn parse_test_path(file: &Utf8Path) -> (&str, &str) {
     (group_name, rule_name)
 }
 
+/// Returns the ranges of the Grit metavariables in a test fixture, such as
+/// `$name` and `$...`.
+pub fn grit_metavariable_ranges(source: &str) -> Vec<TextRange> {
+    let mut ranges = Vec::new();
+    for (start, _) in source.match_indices('$') {
+        let name_len = match &source.as_bytes()[start + 1..] {
+            [b'a'..=b'z' | b'A'..=b'Z' | b'_', rest @ ..] => {
+                1 + rest
+                    .iter()
+                    .take_while(|byte| byte.is_ascii_alphanumeric() || **byte == b'_')
+                    .count()
+            }
+            [b'.', b'.', b'.', ..] => 3,
+            _ => continue,
+        };
+
+        ranges.push(TextRange::at(
+            TextSize::from(start as u32),
+            TextSize::from(1 + name_len as u32),
+        ));
+    }
+
+    ranges
+}
+
 /// This check is used in the parser test to ensure it doesn't emit
 /// bogus nodes without diagnostics, and in the analyzer tests to
 /// check the syntax trees resulting from code actions are correct
@@ -1043,6 +1045,53 @@ pub fn validate_eof_token<L: Language>(syntax: SyntaxNode<L>) {
         "the EOF token may not contain any data except trailing whitespace, but found \"{}\"",
         last_token.token_text_trimmed()
     );
+}
+
+/// Validator to run in our parser's spec tests to make sure that
+/// [SyntaxNode::text_trimmed_range] agrees, for every node of the tree, with
+/// a reference that walks the tokens: it skips tokens with empty text from
+/// the node's first token forward and from its last token backward, leaving
+/// the node's bounds if it has to.
+pub fn validate_text_trimmed_ranges<L: Language>(syntax: &SyntaxNode<L>) {
+    for node in syntax.descendants() {
+        assert_eq!(
+            node.text_trimmed_range(),
+            text_trimmed_range_from_tokens(&node),
+            "wrong trimmed range for {node:#?}"
+        );
+    }
+}
+
+fn text_trimmed_range_from_tokens<L: Language>(node: &SyntaxNode<L>) -> TextRange {
+    let range = node.text_range_with_trivia();
+
+    let mut start = range.start();
+    let mut token = node.first_token();
+    while let Some(current) = token {
+        let trimmed = current.text_trimmed_range();
+        if trimmed.is_empty() {
+            start = current.text_range().end();
+            token = current.next_token();
+        } else {
+            start = trimmed.start();
+            break;
+        }
+    }
+
+    let mut end = range.end();
+    let mut token = node.last_token();
+    while let Some(current) = token {
+        let trimmed = current.text_trimmed_range();
+        if trimmed.is_empty() {
+            end = current.text_range().start();
+            token = current.prev_token();
+        } else {
+            end = trimmed.end();
+            break;
+        }
+    }
+
+    TextRange::new(start, end.max(start))
 }
 
 /// Asserts whether test files containing comments:
